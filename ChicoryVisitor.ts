@@ -3,15 +3,12 @@ import * as parser from './generated/ChicoryParser';
 import { ChicoryTypeChecker } from './ChicoryTypeCheckerVisitor';
 import { CompilationError } from './env';
 
-type SymbolEntry = { name: string; scopeLevel: number };
-
 export class ChicoryParserVisitor {
     private typeChecker: ChicoryTypeChecker;
     private indentLevel: number = 0;
     private scopeLevel: number = 0;
     private uniqueVarCounter: number = 0;
     private errors: CompilationError[] = [];
-    private symbols: SymbolEntry[] = [];
     
     constructor(typeChecker?: ChicoryTypeChecker) {
         this.typeChecker = typeChecker || new ChicoryTypeChecker();
@@ -38,16 +35,7 @@ export class ChicoryParserVisitor {
     }
 
     private exitScope(): void {
-        this.symbols = this.symbols.filter(s => s.scopeLevel < this.scopeLevel);
         this.scopeLevel--;
-    }
-
-    private declareSymbol(name: string): void {
-        this.symbols.push({ name, scopeLevel: this.scopeLevel });
-    }
-
-    private findSymbol(name: string): SymbolEntry | undefined {
-        return this.symbols.find(s => s.name === name && s.scopeLevel <= this.scopeLevel);
     }
 
     // Main entry point for compilation
@@ -77,7 +65,6 @@ export class ChicoryParserVisitor {
     visitAssignStmt(ctx: parser.AssignStmtContext): string {
         const assignKwd = ctx.assignKwd().getText(); // 'let' or 'const'
         const identifier = ctx.IDENTIFIER().getText();
-        this.declareSymbol(identifier); // Register variable in symbol table
         const expr = this.visitExpr(ctx.expr());
         return `${this.indent()}${assignKwd} ${identifier} = ${expr}`;
     }
@@ -124,7 +111,6 @@ export class ChicoryParserVisitor {
 
     visitImportStmt(ctx: parser.ImportStmtContext): string {
         const defaultImport = ctx.IDENTIFIER() ? ctx.IDENTIFIER()!.getText() : "";
-        this.declareSymbol(defaultImport);
         const destructuring = ctx.destructuringImportIdentifier()
             ? this.visitDestructuringImportIdentifier(ctx.destructuringImportIdentifier()!)
             : "";
@@ -135,7 +121,6 @@ export class ChicoryParserVisitor {
 
     visitDestructuringImportIdentifier(ctx: parser.DestructuringImportIdentifierContext): string {
         const identifiers = ctx.IDENTIFIER();
-        identifiers.forEach(id => this.declareSymbol(id.getText()));
         return identifiers.length > 0
             ? `{ ${identifiers.map(id => id.getText()).join(", ")} }`
             : "";
@@ -234,10 +219,6 @@ export class ChicoryParserVisitor {
     }
 
     visitParameterList(ctx: parser.ParameterListContext): string {
-        // Register each parameter in the current scope
-        ctx.IDENTIFIER().forEach(id => {
-            this.declareSymbol(id.getText());
-        });
         return ctx.IDENTIFIER().map(id => id.getText()).join(", ");
     }
 
@@ -288,7 +269,6 @@ export class ChicoryParserVisitor {
             return { pattern: `${varName}.type === "${adtName}"` };
         } else if (ctx.ruleContext instanceof parser.AdtWithParamMatchPatternContext) {
             const [adtName, paramName] = (ctx as parser.AdtWithParamMatchPatternContext).IDENTIFIER().map(id => id.getText());
-            this.declareSymbol(paramName); // Register pattern variable
             return {
                 pattern: `${varName}.type === "${adtName}"`,
                 inject: `const ${paramName} = ${varName}.value;`
@@ -394,13 +374,7 @@ export class ChicoryParserVisitor {
     }
 
     visitIdentifier(ctx: ParserRuleContext): string {
-        const name = ctx.getText();
-        if (!this.findSymbol(name)) {
-            // The type checker should have already reported any undefined variables
-            // We just need to make sure the code generation continues
-            this.reportError(`Undefined variable: ${name}`, ctx);
-        }
-        return name;
+        return ctx.getText();
     }
 
     visitLiteral(ctx: parser.LiteralContext): string {
@@ -410,18 +384,11 @@ export class ChicoryParserVisitor {
     // Public method to get compilation output and errors
     getOutput(ctx: parser.ProgramContext): { code: string; errors: CompilationError[] } {
         this.errors = []; // Reset errors per compilation
-        this.symbols = []; // Reset symbols per compilation
         this.uniqueVarCounter = 0; // Reset variable counter
         this.scopeLevel = 0; // Reset scope level
         
         // Run type checker first
-        const {errors, symbols} = this.typeChecker.check(ctx);
-        
-        // Register ADT constructors from type checker in our symbol table
-        const constructors = this.typeChecker.getConstructors();
-        constructors.forEach(constructor => {
-            this.declareSymbol(constructor.name);
-        });
+        const {errors} = this.typeChecker.check(ctx);
         
         const typeErrors = errors.map(err => ({
             message: `Type error: ${err.message}`,
