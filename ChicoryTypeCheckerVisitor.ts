@@ -234,7 +234,18 @@ export class ChicoryTypeChecker {
 
     private visitTypeDefinition(ctx: parser.TypeDefinitionContext): void {
         const typeName = ctx.IDENTIFIER().getText();
-        const typeExpr = this.visitTypeExpr(ctx.typeExpr(), typeName);
+        
+        // Handle type parameters if present
+        const typeParams: string[] = [];
+        if (ctx.typeParams()) {
+            ctx.typeParams()!.IDENTIFIER().forEach(id => {
+                typeParams.push(id.getText());
+            });
+        }
+        
+        // Visit the type expression with type parameters
+        const typeExpr = this.visitTypeExpr(ctx.typeExpr(), typeName, typeParams);
+        
         this.typeDefs.set(typeName, { def: typeExpr, context: ctx });
         this.symbols.push({
             name: typeName,
@@ -242,6 +253,7 @@ export class ChicoryTypeChecker {
             context: ctx,
             kind: 'type'
         });
+        
         if (typeExpr.kind === 'adt') {
             typeExpr.constructors.forEach(constructor => {
                 this.constructorMap.set(constructor.name, constructor);
@@ -272,24 +284,30 @@ export class ChicoryTypeChecker {
         }
     }
 
-    private visitTypeExpr(ctx: parser.TypeExprContext, typeName?: string): TypeDef {
+    private visitTypeExpr(ctx: parser.TypeExprContext, typeName?: string, typeParams: string[] = []): TypeDef {
+        // Create a scope for type parameters if they exist
+        const typeParamScope = new Map<string, Type>();
+        typeParams.forEach(param => {
+            typeParamScope.set(param, { kind: 'typeParam', name: param });
+        });
+        
         if (ctx.adtType()) {
             if (!typeName) {
                 this.errors.push({ message: 'ADT type must be part of a type definition', context: ctx });
                 return { kind: 'primitive', name: 'number' };
             }
-            return this.visitAdtType(ctx.adtType()!, typeName);
+            return this.visitAdtType(ctx.adtType()!, typeName, typeParamScope);
         }
-        if (ctx.recordType()) return this.visitRecordType(ctx.recordType()!);
-        if (ctx.tupleType()) return this.visitTupleType(ctx.tupleType()!);
+        if (ctx.recordType()) return this.visitRecordType(ctx.recordType()!, typeParamScope);
+        if (ctx.tupleType()) return this.visitTupleType(ctx.tupleType()!, typeParamScope);
         if (ctx.primitiveType()) return this.visitPrimitiveType(ctx.primitiveType()!);
-        if (ctx.functionType()) return this.visitFunctionType(ctx.functionType()!);
-        if (ctx.genericTypeExpr()) return this.visitGenericTypeExpr(ctx.genericTypeExpr()!);
+        if (ctx.functionType()) return this.visitFunctionType(ctx.functionType()!, typeParamScope);
+        if (ctx.genericTypeExpr()) return this.visitGenericTypeExpr(ctx.genericTypeExpr()!, typeParamScope);
         this.errors.push({ message: 'Invalid type expression', context: ctx });
         return { kind: 'primitive', name: 'number' };
     }
 
-    private visitFunctionType(ctx: parser.FunctionTypeContext): TypeDef {
+    private visitFunctionType(ctx: parser.FunctionTypeContext, typeParamScope: Map<string, Type> = new Map()): TypeDef {
         const paramTypes: Type[] = [];
         
         // Process parameters if they exist
@@ -297,18 +315,18 @@ export class ChicoryTypeChecker {
             ctx.typeParam().forEach(param => {
                 if (param instanceof parser.NamedTypeParamContext) {
                     // Named parameter (with type annotation)
-                    const paramType = this.typeDefToType(this.visitTypeExpr(param.typeExpr()), '');
+                    const paramType = this.typeDefToType(this.visitTypeExpr(param.typeExpr(), undefined, Array.from(typeParamScope.keys())), '');
                     paramTypes.push(paramType);
                 } else if (param instanceof parser.UnnamedTypeParamContext) {
                     // Unnamed parameter (just a type)
-                    const paramType = this.typeDefToType(this.visitTypeExpr(param.typeExpr()), '');
+                    const paramType = this.typeDefToType(this.visitTypeExpr(param.typeExpr(), undefined, Array.from(typeParamScope.keys())), '');
                     paramTypes.push(paramType);
                 }
             });
         }
         
         // Process return type
-        const returnType = this.typeDefToType(this.visitTypeExpr(ctx.typeExpr()), '');
+        const returnType = this.typeDefToType(this.visitTypeExpr(ctx.typeExpr(), undefined, Array.from(typeParamScope.keys())), '');
         
         return { 
             kind: 'function', 
@@ -317,16 +335,22 @@ export class ChicoryTypeChecker {
         };
     }
 
-    private visitGenericTypeExpr(ctx: parser.GenericTypeExprContext): TypeDef {
+    private visitGenericTypeExpr(ctx: parser.GenericTypeExprContext, typeParamScope: Map<string, Type> = new Map()): TypeDef {
         let baseType: Type;
         
         // Get the base type (identifier)
         const typeName = ctx.IDENTIFIER().getText();
-        baseType = this.lookupType(typeName, ctx);
+        
+        // Check if it's a type parameter
+        if (typeParamScope.has(typeName)) {
+            baseType = typeParamScope.get(typeName)!;
+        } else {
+            baseType = this.lookupType(typeName, ctx);
+        }
         
         // Process type arguments
         const typeArgs = ctx.typeExpr().map(typeExpr => 
-            this.typeDefToType(this.visitTypeExpr(typeExpr), '')
+            this.typeDefToType(this.visitTypeExpr(typeExpr, undefined, Array.from(typeParamScope.keys())), '')
         );
         
         return {
@@ -336,7 +360,7 @@ export class ChicoryTypeChecker {
         };
     }
 
-    private visitAdtType(ctx: parser.AdtTypeContext, typeName: string): TypeDef {
+    private visitAdtType(ctx: parser.AdtTypeContext, typeName: string, typeParamScope: Map<string, Type> = new Map()): TypeDef {
         const constructors: ConstructorDef[] = [];
         const adtType: Type = { kind: 'adt', name: typeName };
     
@@ -355,9 +379,18 @@ export class ChicoryTypeChecker {
                 const fields = new Map<string, Type>();
                 option.adtTypeAnnotation().forEach(ann => {
                     const fieldName = ann.IDENTIFIER()[0].getText();
-                    const fieldType = ann.primitiveType() 
-                        ? this.visitPrimitiveType(ann.primitiveType()!) as Type
-                        : this.lookupType(ann.IDENTIFIER()[1].getText(), ann);
+                    let fieldType: Type;
+                    if (ann.primitiveType()) {
+                        fieldType = this.visitPrimitiveType(ann.primitiveType()!) as Type;
+                    } else {
+                        const typeName = ann.IDENTIFIER()[1].getText();
+                        // Check if it's a type parameter
+                        if (typeParamScope.has(typeName)) {
+                            fieldType = typeParamScope.get(typeName)!;
+                        } else {
+                            fieldType = this.lookupType(typeName, ann);
+                        }
+                    }
                     fields.set(fieldName, fieldType);
                 });
                 paramTypes.push({ kind: 'record', fields });
@@ -367,7 +400,13 @@ export class ChicoryTypeChecker {
                 constructorName = option.IDENTIFIER()[0].getText();
                 constructorContext = option.IDENTIFIER()[0].symbol;
                 const paramTypeName = option.IDENTIFIER()[1].getText();
-                paramTypes.push(this.lookupType(paramTypeName, option));
+                
+                // Check if it's a type parameter
+                if (typeParamScope.has(paramTypeName)) {
+                    paramTypes.push(typeParamScope.get(paramTypeName)!);
+                } else {
+                    paramTypes.push(this.lookupType(paramTypeName, option));
+                }
             }
             else if (option instanceof parser.AdtOptionPrimitiveTypeContext) {
                 // Structure: IDENTIFIER( primitiveType )
@@ -420,7 +459,7 @@ export class ChicoryTypeChecker {
         }
     }
 
-    private visitRecordType(ctx: parser.RecordTypeContext): TypeDef {
+    private visitRecordType(ctx: parser.RecordTypeContext, typeParamScope: Map<string, Type> = new Map()): TypeDef {
         const fields = new Map<string, Type>();
         ctx.recordTypeAnontation().forEach(ann => {
             const name = ann.IDENTIFIER()[0].getText();
@@ -428,23 +467,36 @@ export class ChicoryTypeChecker {
             if (ann.primitiveType()) {
                 type = this.visitPrimitiveType(ann.primitiveType()!) as Type;
             } else if (ann.recordType()) {
-                type = this.visitRecordType(ann.recordType()!) as Type;
+                type = this.visitRecordType(ann.recordType()!, typeParamScope) as Type;
             } else {
-                type = this.lookupType(ann.IDENTIFIER()[1].getText(), ann);
+                const typeName = ann.IDENTIFIER()[1].getText();
+                // Check if it's a type parameter
+                if (typeParamScope.has(typeName)) {
+                    type = typeParamScope.get(typeName)!;
+                } else {
+                    type = this.lookupType(typeName, ann);
+                }
             }
             fields.set(name, type);
         });
         return { kind: 'record', fields };
     }
 
-    private visitTupleType(ctx: parser.TupleTypeContext): TypeDef {
-        const elements = ctx.tupleField().map(field => this.visitTupleField(field));
+    private visitTupleType(ctx: parser.TupleTypeContext, typeParamScope: Map<string, Type> = new Map()): TypeDef {
+        const elements = ctx.tupleField().map(field => this.visitTupleField(field, typeParamScope));
         return { kind: 'tuple', elements };
     }
 
-    private visitTupleField(ctx: parser.TupleFieldContext): Type {
+    private visitTupleField(ctx: parser.TupleFieldContext, typeParamScope: Map<string, Type> = new Map()): Type {
         if (ctx.primitiveType()) return this.visitPrimitiveType(ctx.primitiveType()!) as Type;
-        if (ctx.IDENTIFIER()) return this.lookupType(ctx.IDENTIFIER()!.getText(), ctx);
+        if (ctx.IDENTIFIER()) {
+            const typeName = ctx.IDENTIFIER()!.getText();
+            // Check if it's a type parameter
+            if (typeParamScope.has(typeName)) {
+                return typeParamScope.get(typeName)!;
+            }
+            return this.lookupType(typeName, ctx);
+        }
         this.errors.push({ message: 'Invalid tuple field', context: ctx });
         return this.freshVar();
     }

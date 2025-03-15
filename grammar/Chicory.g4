@@ -17,7 +17,11 @@ assignStmt
 
 // TODO: Force type identifier to begin with uppercase letter
 typeDefinition
-    : 'type' IDENTIFIER '=' typeExpr
+    : 'type' IDENTIFIER typeParams? '=' typeExpr
+    ;
+
+typeParams
+    : '<' NL* IDENTIFIER (',' NL* IDENTIFIER)* NL* '>'
     ;
 
 typeExpr
