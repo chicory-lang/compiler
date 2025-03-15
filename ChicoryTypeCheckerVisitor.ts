@@ -1,5 +1,5 @@
 // ChicoryTypeCheckerVisitor.ts
-import { ParserRuleContext, Token } from 'antlr4ng';
+import { ParserRuleContext, Token, TerminalNode } from 'antlr4ng';
 import * as parser from './generated/ChicoryParser';
 import { CompilationError, LspRange } from './env';
 
@@ -318,7 +318,16 @@ export class ChicoryTypeChecker {
             } as any; // Adding a custom property to handle type params
         }
         
-        this.errors.push({ message: 'Invalid type expression', context: ctx });
+        // If it's a single identifier, try to look it up as a type
+        if (ctx.getChildCount() === 1 && ctx.getChild(0) instanceof TerminalNode) {
+            const typeName = ctx.getText();
+            const typeDefEntry = this.typeDefs.get(typeName);
+            if (typeDefEntry) {
+                return typeDefEntry.def;
+            }
+        }
+        
+        this.errors.push({ message: `Invalid type expression: ${ctx.getText()}`, context: ctx });
         return { kind: 'primitive', name: 'number' };
     }
 
@@ -335,9 +344,11 @@ export class ChicoryTypeChecker {
                 } else if (param instanceof parser.UnnamedTypeParamContext) {
                     // Unnamed parameter (just a type)
                     const typeExpr = param.typeExpr();
+                    const typeText = typeExpr.getText();
+                    
                     // Check if it's a type parameter identifier
-                    if (typeExpr.getText() && typeParamScope.has(typeExpr.getText())) {
-                        paramTypes.push(typeParamScope.get(typeExpr.getText())!);
+                    if (typeText && typeParamScope.has(typeText)) {
+                        paramTypes.push(typeParamScope.get(typeText)!);
                     } else {
                         const paramType = this.typeDefToType(this.visitTypeExpr(typeExpr, undefined, Array.from(typeParamScope.keys())), '');
                         paramTypes.push(paramType);
@@ -347,7 +358,16 @@ export class ChicoryTypeChecker {
         }
         
         // Process return type
-        const returnType = this.typeDefToType(this.visitTypeExpr(ctx.typeExpr(), undefined, Array.from(typeParamScope.keys())), '');
+        const returnTypeExpr = ctx.typeExpr();
+        const returnTypeText = returnTypeExpr.getText();
+        
+        let returnType: Type;
+        if (returnTypeText && typeParamScope.has(returnTypeText)) {
+            // If the return type is a direct reference to a type parameter
+            returnType = typeParamScope.get(returnTypeText)!;
+        } else {
+            returnType = this.typeDefToType(this.visitTypeExpr(returnTypeExpr, undefined, Array.from(typeParamScope.keys())), '');
+        }
         
         return { 
             kind: 'function', 
