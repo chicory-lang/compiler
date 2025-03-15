@@ -43,6 +43,11 @@ export class ChicoryTypeChecker {
     private errors: CompilationError[] = [];
     private symbols: SymbolInfo[] = [];
     private freshVarCounter = 0;
+    
+    // Public method to get all ADT constructors
+    getConstructors(): ConstructorDef[] {
+        return Array.from(this.constructorMap.values());
+    }
 
     private freshVar(): Type {
         return { kind: 'variable', id: this.freshVarCounter++ };

@@ -6,12 +6,16 @@ import { CompilationError } from './env';
 type SymbolEntry = { name: string; scopeLevel: number };
 
 export class ChicoryParserVisitor {
-    private typeChecker = new ChicoryTypeChecker();
+    private typeChecker: ChicoryTypeChecker;
     private indentLevel: number = 0;
     private scopeLevel: number = 0;
     private uniqueVarCounter: number = 0;
     private errors: CompilationError[] = [];
     private symbols: SymbolEntry[] = [];
+    
+    constructor(typeChecker?: ChicoryTypeChecker) {
+        this.typeChecker = typeChecker || new ChicoryTypeChecker();
+    }
 
     // Utility to generate consistent indentation
     private indent(): string {
@@ -89,39 +93,23 @@ export class ChicoryParserVisitor {
         
         // Check if this is an ADT definition
         if (typeExpr.adtType()) {
-            const adtType = typeExpr.adtType()!;
-            const constructors = adtType.adtOption();
+            // Get constructors from the type checker
+            const constructors = this.typeChecker.getConstructors().filter(c => 
+                c.adtName === typeName
+            );
             
             // Generate constructor functions for each ADT variant
-            const constructorFunctions = constructors.map(option => {
-                let constructorName: string;
-                let params: string = "";
-                let implementation: string = "";
+            const constructorFunctions = constructors.map(constructor => {
+                const constructorName = constructor.name;
                 
-                if (option instanceof parser.AdtOptionAnonymousRecordContext) {
-                    constructorName = option.IDENTIFIER().getText();
-                    this.declareSymbol(constructorName); // Register constructor in symbol table
-                    params = "value";
-                    implementation = `return { type: "${constructorName}", value };`;
-                } 
-                else if (option instanceof parser.AdtOptionNamedTypeContext || 
-                         option instanceof parser.AdtOptionPrimitiveTypeContext) {
-                    constructorName = option.IDENTIFIER()[0].getText();
-                    this.declareSymbol(constructorName); // Register constructor in symbol table
-                    params = "value";
-                    implementation = `return { type: "${constructorName}", value };`;
+                // Check if the constructor takes parameters
+                const constructorType = constructor.type;
+                if (constructorType.kind === 'function' && constructorType.params.length > 0) {
+                    return `${this.indent()}const ${constructorName} = (value) => { return { type: "${constructorName}", value }; };`;
+                } else {
+                    return `${this.indent()}const ${constructorName} = () => { return { type: "${constructorName}" }; };`;
                 }
-                else if (option instanceof parser.AdtOptionNoArgContext) {
-                    constructorName = option.IDENTIFIER().getText();
-                    this.declareSymbol(constructorName); // Register constructor in symbol table
-                    implementation = `return { type: "${constructorName}" };`;
-                }
-                else {
-                    return ""; // Unknown option type
-                }
-                
-                return `${this.indent()}const ${constructorName} = ${params ? `(${params})` : "()"} => { ${implementation} };`;
-            }).filter(Boolean).join("\n");
+            }).join("\n");
             
             return constructorFunctions;
         }
@@ -397,11 +385,9 @@ export class ChicoryParserVisitor {
     visitIdentifier(ctx: ParserRuleContext): string {
         const name = ctx.getText();
         if (!this.findSymbol(name)) {
-            // Check if this is an ADT constructor that was generated but not registered in symbols
-            const constructorExists = this.symbols.some(s => s.name === name && s.kind === 'constructor');
-            if (!constructorExists) {
-                this.reportError(`Undefined variable: ${name}`, ctx);
-            }
+            // The type checker should have already reported any undefined variables
+            // We just need to make sure the code generation continues
+            this.reportError(`Undefined variable: ${name}`, ctx);
         }
         return name;
     }
@@ -417,8 +403,15 @@ export class ChicoryParserVisitor {
         this.uniqueVarCounter = 0; // Reset variable counter
         this.scopeLevel = 0; // Reset scope level
         
-        // Run type checker
-        const {errors,symbols} = this.typeChecker.check(ctx)
+        // Run type checker first
+        const {errors, symbols} = this.typeChecker.check(ctx);
+        
+        // Register ADT constructors from type checker in our symbol table
+        const constructors = this.typeChecker.getConstructors();
+        constructors.forEach(constructor => {
+            this.declareSymbol(constructor.name);
+        });
+        
         const typeErrors = errors.map(err => ({
             message: `Type error: ${err.message}`,
             context: err.context

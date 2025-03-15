@@ -36,7 +36,11 @@ export default (source: string): CompileResult => {
     let parser = new ChicoryParser(tokenStream);
     let tree = parser.program();
     
-    const visitor = new ChicoryParserVisitor();
+    // Create type checker first
+    const typeChecker = new ChicoryTypeChecker();
+    
+    // Create visitor with the type checker
+    const visitor = new ChicoryParserVisitor(typeChecker);
     const {code, errors: unprocessedErrors} = visitor.getOutput(tree) || {code: "", errors: []}
 
     const mapErrors = compilerErrorToLspError(tokenStream)
