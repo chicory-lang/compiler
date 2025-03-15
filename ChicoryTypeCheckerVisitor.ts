@@ -284,7 +284,7 @@ export class ChicoryTypeChecker {
         if (ctx.tupleType()) return this.visitTupleType(ctx.tupleType()!);
         if (ctx.primitiveType()) return this.visitPrimitiveType(ctx.primitiveType()!);
         if (ctx.functionType()) return this.visitFunctionType(ctx.functionType()!);
-        if (ctx.genericType()) return this.visitGenericType(ctx.genericType()!);
+        if (ctx.genericTypeExpr()) return this.visitGenericTypeExpr(ctx.genericTypeExpr()!);
         this.errors.push({ message: 'Invalid type expression', context: ctx });
         return { kind: 'primitive', name: 'number' };
     }
@@ -317,26 +317,12 @@ export class ChicoryTypeChecker {
         };
     }
 
-    private visitGenericType(ctx: parser.GenericTypeContext): TypeDef {
+    private visitGenericTypeExpr(ctx: parser.GenericTypeExprContext): TypeDef {
         let baseType: Type;
         
-        // Get the base type (either an identifier or a type expression)
-        if (ctx.IDENTIFIER().length > 0) {
-            const typeName = ctx.IDENTIFIER(0).getText();
-            baseType = this.lookupType(typeName, ctx);
-        } else {
-            baseType = this.typeDefToType(this.visitTypeExpr(ctx.typeExpr(0)), '');
-            // Skip the first type expression when processing type arguments
-            const typeArgs = ctx.typeExpr().slice(1).map(typeExpr => 
-                this.typeDefToType(this.visitTypeExpr(typeExpr), '')
-            );
-            
-            return {
-                kind: 'generic',
-                base: baseType,
-                typeArgs: typeArgs
-            };
-        }
+        // Get the base type (identifier)
+        const typeName = ctx.IDENTIFIER().getText();
+        baseType = this.lookupType(typeName, ctx);
         
         // Process type arguments
         const typeArgs = ctx.typeExpr().map(typeExpr => 

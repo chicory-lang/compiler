@@ -26,7 +26,7 @@ typeExpr
     | tupleType
     | primitiveType
     | functionType
-    | genericType
+    | genericTypeExpr
     ;
 
 adtType: NL* '|'? adtOption (NL* '|' adtOption )* NL*;
@@ -57,9 +57,8 @@ typeParam
     | typeExpr                 #UnnamedTypeParam
     ;
 
-genericType 
+genericTypeExpr
     : IDENTIFIER '<' NL* typeExpr (',' NL* typeExpr)* NL* '>'
-    | typeExpr '<' NL* typeExpr (',' NL* typeExpr)* NL* '>'
     ;
 
 importStmt

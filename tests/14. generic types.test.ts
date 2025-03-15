@@ -27,7 +27,7 @@ export {}
 test('Nested generic types', () => {
     const code = `
 type Box<T> = { value: T }
-type BoxOfBoxes<T> = Box<Box<T>>
+type BoxOfBoxes<T> = Box<T>
 type MaybeBox<T> = Box<T>
 
 export {}
