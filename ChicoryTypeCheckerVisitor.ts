@@ -243,6 +243,12 @@ export class ChicoryTypeChecker {
             });
         }
         
+        // Create a scope for type parameters
+        const typeParamScope = new Map<string, Type>();
+        typeParams.forEach(param => {
+            typeParamScope.set(param, { kind: 'typeParam', name: param });
+        });
+        
         // Visit the type expression with type parameters
         const typeExpr = this.visitTypeExpr(ctx.typeExpr(), typeName, typeParams);
         
@@ -282,7 +288,13 @@ export class ChicoryTypeChecker {
                 return { kind: 'primitive', name: typeDef.name };
             case 'record': return { kind: 'record', fields: typeDef.fields };
             case 'tuple': return { kind: 'tuple', elements: typeDef.elements };
-            case 'function': return { kind: 'function', params: typeDef.params, return: typeDef.return };
+            case 'function': 
+                // Make sure we preserve type parameters in function types
+                return { 
+                    kind: 'function', 
+                    params: typeDef.params.map(p => p.kind === 'typeParam' ? p : p), 
+                    return: typeDef.return.kind === 'typeParam' ? typeDef.return : typeDef.return 
+                };
             case 'adt': return { kind: 'adt', name: typeName };
             case 'generic': return { kind: 'generic', base: typeDef.base, typeArgs: typeDef.typeArgs };
         }
@@ -295,14 +307,22 @@ export class ChicoryTypeChecker {
             typeParamScope.set(param, { kind: 'typeParam', name: param });
         });
         
-        // First check if this is a direct reference to a type parameter
-        const text = ctx.getText();
-        if (text && typeParamScope.has(text)) {
-            return { 
-                kind: 'primitive', 
-                name: 'typeParam',
-                typeParam: text
-            } as any; // Adding a custom property to handle type params
+        // Special case for direct identifier references to type parameters
+        if (ctx.getChildCount() === 1 && ctx.getChild(0) instanceof TerminalNode) {
+            const text = ctx.getText();
+            if (typeParamScope.has(text)) {
+                return { 
+                    kind: 'primitive', 
+                    name: 'typeParam',
+                    typeParam: text
+                } as any;
+            }
+            
+            // Check if it's a defined type
+            const typeDefEntry = this.typeDefs.get(text);
+            if (typeDefEntry) {
+                return typeDefEntry.def;
+            }
         }
         
         if (ctx.adtType()) {
@@ -317,15 +337,6 @@ export class ChicoryTypeChecker {
         if (ctx.primitiveType()) return this.visitPrimitiveType(ctx.primitiveType()!);
         if (ctx.functionType()) return this.visitFunctionType(ctx.functionType()!, typeParamScope);
         if (ctx.genericTypeExpr()) return this.visitGenericTypeExpr(ctx.genericTypeExpr()!, typeParamScope);
-        
-        // If it's a single identifier, try to look it up as a type
-        if (ctx.getChildCount() === 1 && ctx.getChild(0) instanceof TerminalNode) {
-            const typeName = ctx.getText();
-            const typeDefEntry = this.typeDefs.get(typeName);
-            if (typeDefEntry) {
-                return typeDefEntry.def;
-            }
-        }
         
         this.errors.push({ message: `Invalid type expression: ${ctx.getText()}`, context: ctx });
         return { kind: 'primitive', name: 'number' };
@@ -357,12 +368,12 @@ export class ChicoryTypeChecker {
             });
         }
         
-        // Process return type
+        // Process return type - handle direct type parameter references
         const returnTypeExpr = ctx.typeExpr();
         const returnTypeText = returnTypeExpr.getText();
         
-        // Direct check for type parameter in return position
-        if (typeParamScope.has(returnTypeText)) {
+        // Check if the return type is a direct reference to a type parameter
+        if (returnTypeText && typeParamScope.has(returnTypeText)) {
             return { 
                 kind: 'function', 
                 params: paramTypes, 
@@ -370,11 +381,9 @@ export class ChicoryTypeChecker {
             };
         }
         
-        // Otherwise process the return type normally
-        const returnType = this.typeDefToType(
-            this.visitTypeExpr(returnTypeExpr, undefined, Array.from(typeParamScope.keys())), 
-            ''
-        );
+        // For more complex return types, we need to pass the type parameter scope
+        const returnTypeDef = this.visitTypeExpr(returnTypeExpr, undefined, Array.from(typeParamScope.keys()));
+        const returnType = this.typeDefToType(returnTypeDef, '');
         
         return { 
             kind: 'function', 
