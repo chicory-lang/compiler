@@ -243,19 +243,17 @@ export class ChicoryTypeChecker {
             });
         }
         
+        console.log(`Processing type definition: ${typeName}<${typeParams.join(', ')}>`);
+        
         // Create a scope for type parameters
         const typeParamScope = new Map<string, Type>();
         typeParams.forEach(param => {
             typeParamScope.set(param, { kind: 'typeParam', name: param });
+            console.log(`Registered type parameter: ${param}`);
         });
         
         // Visit the type expression with type parameters
         const typeExpr = this.visitTypeExpr(ctx.typeExpr(), typeName, typeParams);
-        
-        // Debug log for type parameters
-        if (typeParams.length > 0) {
-            console.log(`Type definition: ${typeName}<${typeParams.join(', ')}> = ${ctx.typeExpr().getText()}`);
-        }
         
         this.typeDefs.set(typeName, { def: typeExpr, context: ctx });
         this.symbols.push({
@@ -316,7 +314,10 @@ export class ChicoryTypeChecker {
     private visitTypeExpr(ctx: parser.TypeExprContext, typeName?: string, typeParams: string[] = []): TypeDef {
         // Handle direct type parameter references first
         const text = ctx.getText();
+        
+        // Check if this is a direct reference to a type parameter
         if (typeParams.includes(text)) {
+            console.log(`Found type parameter reference: ${text}`);
             return { 
                 kind: 'primitive', 
                 name: 'typeParam',
@@ -360,6 +361,8 @@ export class ChicoryTypeChecker {
         const paramTypes: Type[] = [];
         const typeParamsList = Array.from(typeParamScope.keys());
         
+        console.log(`Processing function type with type parameters: ${typeParamsList.join(', ')}`);
+        
         // Process parameters if they exist
         if (ctx.typeParam()) {
             ctx.typeParam().forEach(param => {
@@ -372,8 +375,11 @@ export class ChicoryTypeChecker {
                     const typeExpr = param.typeExpr();
                     const typeText = typeExpr.getText();
                     
+                    console.log(`Checking parameter: ${typeText}`);
+                    
                     // Direct check for type parameter
                     if (typeParamsList.includes(typeText)) {
+                        console.log(`Found type parameter in function param: ${typeText}`);
                         paramTypes.push({ kind: 'typeParam', name: typeText });
                     } else {
                         const paramType = this.typeDefToType(this.visitTypeExpr(typeExpr, undefined, typeParamsList), '');
@@ -387,8 +393,11 @@ export class ChicoryTypeChecker {
         const returnTypeExpr = ctx.typeExpr();
         const returnTypeText = returnTypeExpr.getText();
         
+        console.log(`Checking return type: ${returnTypeText}`);
+        
         // Direct check for type parameter in return position
         if (typeParamsList.includes(returnTypeText)) {
+            console.log(`Found type parameter in return position: ${returnTypeText}`);
             return { 
                 kind: 'function', 
                 params: paramTypes, 
