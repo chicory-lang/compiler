@@ -223,15 +223,21 @@ export class ChicoryParserVisitor {
     }
 
     visitFuncExpr(ctx: parser.FuncExprContext): string {
+        this.enterScope();
         const params = ctx.parameterList() ? this.visitParameterList(ctx.parameterList()!) : "";
         const childExpr = ctx.expr().getChild(0);
         const body = childExpr instanceof parser.BlockExpressionContext
             ? this.visitBlockExpr(childExpr.blockExpr())
             : this.visitExpr(ctx.expr());
+        this.exitScope();
         return `(${params}) => ${body}`;
     }
 
     visitParameterList(ctx: parser.ParameterListContext): string {
+        // Register each parameter in the current scope
+        ctx.IDENTIFIER().forEach(id => {
+            this.declareSymbol(id.getText());
+        });
         return ctx.IDENTIFIER().map(id => id.getText()).join(", ");
     }
 

@@ -567,19 +567,17 @@ export class ChicoryTypeChecker {
 
     private visitFuncExpr(ctx: parser.FuncExprContext): Type {
         this.enterScope();
-        const params = ctx.parameterList()?.IDENTIFIER().map(ctx => ({
-            name: ctx.getText(),
-            context: ctx
+        const params = ctx.parameterList()?.IDENTIFIER().map(id => ({
+            name: id.getText(),
+            context: id
         })) || [];
         const paramTypes = params.map(() => this.freshVar());
         params.forEach((param, i) => {
-            // TODO: give the more narrowly constrained context...
-            this.currentEnv[this.currentEnv.length - 1].set(param.name, { type: paramTypes[i], context: ctx });
+            this.currentEnv[this.currentEnv.length - 1].set(param.name, { type: paramTypes[i], context: param.context });
             this.symbols.push({
                 name: param.name,
                 type: paramTypes[i],
-                // TODO: give the more narrowly constrained context...
-                context: ctx,
+                context: param.context,
                 kind: 'parameter'
             });
         });
