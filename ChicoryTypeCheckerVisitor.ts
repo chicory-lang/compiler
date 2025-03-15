@@ -533,7 +533,26 @@ export class ChicoryTypeChecker {
 
     private visitOperator(op: string, left: Type, right: Type, ctx: ParserRuleContext): Type {
         switch (op) {
-            case '+': case '-': case '*': case '/':
+            case '+':
+                // Handle string concatenation or number addition
+                const resolvedLeft = this.resolve(left);
+                const resolvedRight = this.resolve(right);
+                
+                if (resolvedLeft.kind === 'primitive' && resolvedLeft.name === 'string') {
+                    // If left is string, right must be string too
+                    this.unify(right, { kind: 'primitive', name: 'string' }, ctx);
+                    return { kind: 'primitive', name: 'string' };
+                } else if (resolvedRight.kind === 'primitive' && resolvedRight.name === 'string') {
+                    // If right is string, left must be string too
+                    this.unify(left, { kind: 'primitive', name: 'string' }, ctx);
+                    return { kind: 'primitive', name: 'string' };
+                } else {
+                    // Default to number addition
+                    this.unify(left, { kind: 'primitive', name: 'number' }, ctx);
+                    this.unify(right, { kind: 'primitive', name: 'number' }, ctx);
+                    return { kind: 'primitive', name: 'number' };
+                }
+            case '-': case '*': case '/':
                 this.unify(left, { kind: 'primitive', name: 'number' }, ctx);
                 this.unify(right, { kind: 'primitive', name: 'number' }, ctx);
                 return { kind: 'primitive', name: 'number' };
