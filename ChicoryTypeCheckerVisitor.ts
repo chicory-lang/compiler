@@ -295,6 +295,16 @@ export class ChicoryTypeChecker {
             typeParamScope.set(param, { kind: 'typeParam', name: param });
         });
         
+        // First check if this is a direct reference to a type parameter
+        const text = ctx.getText();
+        if (text && typeParamScope.has(text)) {
+            return { 
+                kind: 'primitive', 
+                name: 'typeParam',
+                typeParam: text
+            } as any; // Adding a custom property to handle type params
+        }
+        
         if (ctx.adtType()) {
             if (!typeName) {
                 this.errors.push({ message: 'ADT type must be part of a type definition', context: ctx });
@@ -307,16 +317,6 @@ export class ChicoryTypeChecker {
         if (ctx.primitiveType()) return this.visitPrimitiveType(ctx.primitiveType()!);
         if (ctx.functionType()) return this.visitFunctionType(ctx.functionType()!, typeParamScope);
         if (ctx.genericTypeExpr()) return this.visitGenericTypeExpr(ctx.genericTypeExpr()!, typeParamScope);
-        
-        // Check if this is a direct reference to a type parameter
-        const text = ctx.getText();
-        if (text && typeParamScope.has(text)) {
-            return { 
-                kind: 'primitive', 
-                name: 'typeParam',
-                typeParam: text
-            } as any; // Adding a custom property to handle type params
-        }
         
         // If it's a single identifier, try to look it up as a type
         if (ctx.getChildCount() === 1 && ctx.getChild(0) instanceof TerminalNode) {
@@ -359,18 +359,15 @@ export class ChicoryTypeChecker {
         
         // Process return type
         const returnTypeExpr = ctx.typeExpr();
+        const returnTypeText = returnTypeExpr.getText();
         
-        // Handle direct type parameter references in return type
-        if (returnTypeExpr.getChildCount() === 1 && 
-            returnTypeExpr.getChild(0) instanceof TerminalNode) {
-            const returnTypeText = returnTypeExpr.getText();
-            if (typeParamScope.has(returnTypeText)) {
-                return { 
-                    kind: 'function', 
-                    params: paramTypes, 
-                    return: typeParamScope.get(returnTypeText)! 
-                };
-            }
+        // Direct check for type parameter in return position
+        if (typeParamScope.has(returnTypeText)) {
+            return { 
+                kind: 'function', 
+                params: paramTypes, 
+                return: typeParamScope.get(returnTypeText)! 
+            };
         }
         
         // Otherwise process the return type normally
