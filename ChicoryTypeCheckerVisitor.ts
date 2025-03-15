@@ -359,15 +359,25 @@ export class ChicoryTypeChecker {
         
         // Process return type
         const returnTypeExpr = ctx.typeExpr();
-        const returnTypeText = returnTypeExpr.getText();
         
-        let returnType: Type;
-        if (returnTypeText && typeParamScope.has(returnTypeText)) {
-            // If the return type is a direct reference to a type parameter
-            returnType = typeParamScope.get(returnTypeText)!;
-        } else {
-            returnType = this.typeDefToType(this.visitTypeExpr(returnTypeExpr, undefined, Array.from(typeParamScope.keys())), '');
+        // Handle direct type parameter references in return type
+        if (returnTypeExpr.getChildCount() === 1 && 
+            returnTypeExpr.getChild(0) instanceof TerminalNode) {
+            const returnTypeText = returnTypeExpr.getText();
+            if (typeParamScope.has(returnTypeText)) {
+                return { 
+                    kind: 'function', 
+                    params: paramTypes, 
+                    return: typeParamScope.get(returnTypeText)! 
+                };
+            }
         }
+        
+        // Otherwise process the return type normally
+        const returnType = this.typeDefToType(
+            this.visitTypeExpr(returnTypeExpr, undefined, Array.from(typeParamScope.keys())), 
+            ''
+        );
         
         return { 
             kind: 'function', 
