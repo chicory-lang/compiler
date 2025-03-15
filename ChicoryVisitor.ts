@@ -100,17 +100,20 @@ export class ChicoryParserVisitor {
                 
                 if (option instanceof parser.AdtOptionAnonymousRecordContext) {
                     constructorName = option.IDENTIFIER().getText();
+                    this.declareSymbol(constructorName); // Register constructor in symbol table
                     params = "value";
                     implementation = `return { type: "${constructorName}", value };`;
                 } 
                 else if (option instanceof parser.AdtOptionNamedTypeContext || 
                          option instanceof parser.AdtOptionPrimitiveTypeContext) {
                     constructorName = option.IDENTIFIER()[0].getText();
+                    this.declareSymbol(constructorName); // Register constructor in symbol table
                     params = "value";
                     implementation = `return { type: "${constructorName}", value };`;
                 }
                 else if (option instanceof parser.AdtOptionNoArgContext) {
                     constructorName = option.IDENTIFIER().getText();
+                    this.declareSymbol(constructorName); // Register constructor in symbol table
                     implementation = `return { type: "${constructorName}" };`;
                 }
                 else {
@@ -394,7 +397,11 @@ export class ChicoryParserVisitor {
     visitIdentifier(ctx: ParserRuleContext): string {
         const name = ctx.getText();
         if (!this.findSymbol(name)) {
-            this.reportError(`Undefined variable: ${name}`, ctx);
+            // Check if this is an ADT constructor that was generated but not registered in symbols
+            const constructorExists = this.symbols.some(s => s.name === name && s.kind === 'constructor');
+            if (!constructorExists) {
+                this.reportError(`Undefined variable: ${name}`, ctx);
+            }
         }
         return name;
     }
