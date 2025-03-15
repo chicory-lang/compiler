@@ -390,9 +390,21 @@ export class ChicoryTypeChecker {
         }
         
         // Process type arguments
-        const typeArgs = ctx.typeExpr().map(typeExpr => 
-            this.typeDefToType(this.visitTypeExpr(typeExpr, undefined, Array.from(typeParamScope.keys())), '')
-        );
+        const typeArgs: Type[] = [];
+        for (const typeExpr of ctx.typeExpr()) {
+            const typeText = typeExpr.getText();
+            
+            // Check if the type argument is a direct reference to a type parameter
+            if (typeText && typeParamScope.has(typeText)) {
+                typeArgs.push(typeParamScope.get(typeText)!);
+            } else {
+                const typeArg = this.typeDefToType(
+                    this.visitTypeExpr(typeExpr, undefined, Array.from(typeParamScope.keys())), 
+                    ''
+                );
+                typeArgs.push(typeArg);
+            }
+        }
         
         return {
             kind: 'generic',
@@ -560,6 +572,7 @@ export class ChicoryTypeChecker {
             case 'tuple': return { kind: 'tuple', elements: typeDef.elements };
             case 'adt': return { kind: 'adt', name: typeName };
             case 'function': return { kind: 'function', params: typeDef.params, return: typeDef.return };
+            case 'generic': return { kind: 'generic', base: typeDef.base, typeArgs: typeDef.typeArgs };
             default: return this.freshVar();
         }
     }
