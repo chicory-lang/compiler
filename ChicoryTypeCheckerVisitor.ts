@@ -233,6 +233,12 @@ export class ChicoryTypeChecker {
                     context: constructor.context,
                     kind: 'constructor'
                 });
+                
+                // Register constructor in the current scope
+                this.currentEnv[this.currentEnv.length - 1].set(constructor.name, { 
+                    type: constructor.type, 
+                    context: constructor.context 
+                });
             });
         }
     }
