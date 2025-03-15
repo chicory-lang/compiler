@@ -592,11 +592,12 @@ export class ChicoryTypeChecker {
         })) || [];
         const paramTypes = params.map(() => this.freshVar());
         params.forEach((param, i) => {
-            this.currentEnv[this.currentEnv.length - 1].set(param.name, { type: paramTypes[i], context: param.context });
+            // TODO: more narrowly constrain ctx to identifier (but it's a terminal node, so it doesn't have a ctx)
+            this.currentEnv[this.currentEnv.length - 1].set(param.name, { type: paramTypes[i], context: ctx });
             this.symbols.push({
                 name: param.name,
                 type: paramTypes[i],
-                context: param.context,
+                context: ctx,
                 kind: 'parameter'
             });
         });
