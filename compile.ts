@@ -2,6 +2,7 @@ import { CharStream, CommonTokenStream, ParserRuleContext, ParseTreeWalker, Toke
 import { ChicoryLexer } from './generated/ChicoryLexer';
 import { ChicoryParser } from './generated/ChicoryParser';
 import { ChicoryParserVisitor } from './ChicoryVisitor';
+import { ChicoryTypeChecker } from './ChicoryTypeCheckerVisitor';
 import { LspDiagnostic } from './env';
 
 const getRange = (ctx: ParserRuleContext, tokenStream: TokenStream) => {
