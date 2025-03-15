@@ -5,11 +5,13 @@ import { CompilationError, LspRange } from './env';
 
 type Type =
     | { kind: 'external', module: string }
-    | { kind: 'primitive', name: 'number' | 'string' | 'boolean' | 'jsx' }
+    | { kind: 'primitive', name: 'number' | 'string' | 'boolean' | 'jsx' | 'unit' }
     | { kind: 'function', params: Type[], return: Type }
     | { kind: 'tuple', elements: Type[] }
     | { kind: 'record', fields: Map<string, Type> }
     | { kind: 'adt', name: string }
+    | { kind: 'generic', base: Type, typeArgs: Type[] }
+    | { kind: 'typeParam', name: string }
     | { kind: 'variable', id: number };
 
 type SymbolInfo = {
@@ -27,11 +29,12 @@ type ConstructorDef = {
 };
 
 type TypeDef =
-    | { kind: 'primitive', name: 'number' | 'string' | 'boolean' }
+    | { kind: 'primitive', name: 'number' | 'string' | 'boolean' | 'unit' }
     | { kind: 'function', params: Type[], return: Type }
     | { kind: 'tuple', elements: Type[] }
     | { kind: 'record', fields: Map<string, Type> }
-    | { kind: 'adt', constructors: ConstructorDef[] };
+    | { kind: 'adt', constructors: ConstructorDef[] }
+    | { kind: 'generic', base: Type, typeArgs: Type[] };
 
 type EnvEntry = { type: Type; context: ParserRuleContext };
 
@@ -85,6 +88,16 @@ export class ChicoryTypeChecker {
             }
             t1.params.forEach((p, i) => this.unify(p, t2.params[i], ctx));
             this.unify(t1.return, t2.return, ctx);
+            return;
+        }
+
+        if (t1.kind === 'generic' && t2.kind === 'generic') {
+            this.unify(t1.base, t2.base, ctx);
+            if (t1.typeArgs.length !== t2.typeArgs.length) {
+                this.errors.push({ message: `Generic type argument count mismatch`, context: ctx });
+                return;
+            }
+            t1.typeArgs.forEach((arg, i) => this.unify(arg, t2.typeArgs[i], ctx));
             return;
         }
 
@@ -255,6 +268,7 @@ export class ChicoryTypeChecker {
             case 'tuple': return { kind: 'tuple', elements: typeDef.elements };
             case 'function': return { kind: 'function', params: typeDef.params, return: typeDef.return };
             case 'adt': return { kind: 'adt', name: typeName };
+            case 'generic': return { kind: 'generic', base: typeDef.base, typeArgs: typeDef.typeArgs };
         }
     }
 
@@ -269,8 +283,71 @@ export class ChicoryTypeChecker {
         if (ctx.recordType()) return this.visitRecordType(ctx.recordType()!);
         if (ctx.tupleType()) return this.visitTupleType(ctx.tupleType()!);
         if (ctx.primitiveType()) return this.visitPrimitiveType(ctx.primitiveType()!);
+        if (ctx.functionType()) return this.visitFunctionType(ctx.functionType()!);
+        if (ctx.genericType()) return this.visitGenericType(ctx.genericType()!);
         this.errors.push({ message: 'Invalid type expression', context: ctx });
         return { kind: 'primitive', name: 'number' };
+    }
+
+    private visitFunctionType(ctx: parser.FunctionTypeContext): TypeDef {
+        const paramTypes: Type[] = [];
+        
+        // Process parameters if they exist
+        if (ctx.typeParam()) {
+            ctx.typeParam().forEach(param => {
+                if (param instanceof parser.NamedTypeParamContext) {
+                    // Named parameter (with type annotation)
+                    const paramType = this.typeDefToType(this.visitTypeExpr(param.typeExpr()), '');
+                    paramTypes.push(paramType);
+                } else if (param instanceof parser.UnnamedTypeParamContext) {
+                    // Unnamed parameter (just a type)
+                    const paramType = this.typeDefToType(this.visitTypeExpr(param.typeExpr()), '');
+                    paramTypes.push(paramType);
+                }
+            });
+        }
+        
+        // Process return type
+        const returnType = this.typeDefToType(this.visitTypeExpr(ctx.typeExpr()), '');
+        
+        return { 
+            kind: 'function', 
+            params: paramTypes, 
+            return: returnType 
+        };
+    }
+
+    private visitGenericType(ctx: parser.GenericTypeContext): TypeDef {
+        let baseType: Type;
+        
+        // Get the base type (either an identifier or a type expression)
+        if (ctx.IDENTIFIER().length > 0) {
+            const typeName = ctx.IDENTIFIER(0).getText();
+            baseType = this.lookupType(typeName, ctx);
+        } else {
+            baseType = this.typeDefToType(this.visitTypeExpr(ctx.typeExpr(0)), '');
+            // Skip the first type expression when processing type arguments
+            const typeArgs = ctx.typeExpr().slice(1).map(typeExpr => 
+                this.typeDefToType(this.visitTypeExpr(typeExpr), '')
+            );
+            
+            return {
+                kind: 'generic',
+                base: baseType,
+                typeArgs: typeArgs
+            };
+        }
+        
+        // Process type arguments
+        const typeArgs = ctx.typeExpr().map(typeExpr => 
+            this.typeDefToType(this.visitTypeExpr(typeExpr), '')
+        );
+        
+        return {
+            kind: 'generic',
+            base: baseType,
+            typeArgs: typeArgs
+        };
     }
 
     private visitAdtType(ctx: parser.AdtTypeContext, typeName: string): TypeDef {
@@ -387,7 +464,7 @@ export class ChicoryTypeChecker {
     }
 
     private visitPrimitiveType(ctx: parser.PrimitiveTypeContext): TypeDef {
-        const name = ctx.getText() as 'number' | 'string' | 'boolean';
+        const name = ctx.getText() as 'number' | 'string' | 'boolean' | 'unit';
         return { kind: 'primitive', name };
     }
 

@@ -114,6 +114,11 @@ export class ChicoryParserVisitor {
             return constructorFunctions;
         }
         
+        // For function types and generic types, we just erase them
+        if (typeExpr.functionType() || typeExpr.genericType()) {
+            return `${this.indent()}/* Type Erasure: ${typeName} */`;
+        }
+        
         return `${this.indent()}/* Type Erasure: ${typeName} */`; // Placeholder for other types
     }
 

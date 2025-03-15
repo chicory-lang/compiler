@@ -25,6 +25,8 @@ typeExpr
     | recordType
     | tupleType
     | primitiveType
+    | functionType
+    | genericType
     ;
 
 adtType: NL* '|'? adtOption (NL* '|' adtOption )* NL*;
@@ -46,7 +48,19 @@ tupleType: '[' NL* tupleField (',' NL* tupleField)* ','? NL* ']';
 
 tupleField: primitiveType | IDENTIFIER;
 
-primitiveType: 'number' | 'string' | 'boolean';
+primitiveType: 'number' | 'string' | 'boolean' | 'unit';
+
+functionType: '(' NL* (typeParam (',' NL* typeParam)*)? NL* ')' '=>' NL* typeExpr;
+
+typeParam
+    : IDENTIFIER ':' typeExpr  #NamedTypeParam
+    | typeExpr                 #UnnamedTypeParam
+    ;
+
+genericType 
+    : IDENTIFIER '<' NL* typeExpr (',' NL* typeExpr)* NL* '>'
+    | typeExpr '<' NL* typeExpr (',' NL* typeExpr)* NL* '>'
+    ;
 
 importStmt
     : 'import' IDENTIFIER 'from' STRING
