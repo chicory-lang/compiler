@@ -29,7 +29,7 @@ type ConstructorDef = {
 };
 
 type TypeDef =
-    | { kind: 'primitive', name: 'number' | 'string' | 'boolean' | 'unit' }
+    | { kind: 'primitive', name: 'number' | 'string' | 'boolean' | 'unit' | 'typeParam', typeParam?: string }
     | { kind: 'function', params: Type[], return: Type }
     | { kind: 'tuple', elements: Type[] }
     | { kind: 'record', fields: Map<string, Type> }
@@ -275,7 +275,11 @@ export class ChicoryTypeChecker {
 
     private typeDefToType(typeDef: TypeDef, typeName: string): Type {
         switch (typeDef.kind) {
-            case 'primitive': return { kind: 'primitive', name: typeDef.name };
+            case 'primitive': 
+                if (typeDef.name === 'typeParam' && typeDef.typeParam) {
+                    return { kind: 'typeParam', name: typeDef.typeParam };
+                }
+                return { kind: 'primitive', name: typeDef.name };
             case 'record': return { kind: 'record', fields: typeDef.fields };
             case 'tuple': return { kind: 'tuple', elements: typeDef.elements };
             case 'function': return { kind: 'function', params: typeDef.params, return: typeDef.return };
@@ -303,6 +307,17 @@ export class ChicoryTypeChecker {
         if (ctx.primitiveType()) return this.visitPrimitiveType(ctx.primitiveType()!);
         if (ctx.functionType()) return this.visitFunctionType(ctx.functionType()!, typeParamScope);
         if (ctx.genericTypeExpr()) return this.visitGenericTypeExpr(ctx.genericTypeExpr()!, typeParamScope);
+        
+        // Check if this is a direct reference to a type parameter
+        const text = ctx.getText();
+        if (text && typeParamScope.has(text)) {
+            return { 
+                kind: 'primitive', 
+                name: 'typeParam',
+                typeParam: text
+            } as any; // Adding a custom property to handle type params
+        }
+        
         this.errors.push({ message: 'Invalid type expression', context: ctx });
         return { kind: 'primitive', name: 'number' };
     }
@@ -319,8 +334,14 @@ export class ChicoryTypeChecker {
                     paramTypes.push(paramType);
                 } else if (param instanceof parser.UnnamedTypeParamContext) {
                     // Unnamed parameter (just a type)
-                    const paramType = this.typeDefToType(this.visitTypeExpr(param.typeExpr(), undefined, Array.from(typeParamScope.keys())), '');
-                    paramTypes.push(paramType);
+                    const typeExpr = param.typeExpr();
+                    // Check if it's a type parameter identifier
+                    if (typeExpr.getText() && typeParamScope.has(typeExpr.getText())) {
+                        paramTypes.push(typeParamScope.get(typeExpr.getText())!);
+                    } else {
+                        const paramType = this.typeDefToType(this.visitTypeExpr(typeExpr, undefined, Array.from(typeParamScope.keys())), '');
+                        paramTypes.push(paramType);
+                    }
                 }
             });
         }
