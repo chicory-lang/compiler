@@ -84,8 +84,46 @@ export class ChicoryParserVisitor {
     }
 
     visitTypeDefinition(ctx: parser.TypeDefinitionContext): string {
-        const name = ctx.IDENTIFIER().getText();
-        return `${this.indent()}/* Type Erasure: ${name} */`; // Placeholder for type checking later
+        const typeName = ctx.IDENTIFIER().getText();
+        const typeExpr = ctx.typeExpr();
+        
+        // Check if this is an ADT definition
+        if (typeExpr.adtType()) {
+            const adtType = typeExpr.adtType()!;
+            const constructors = adtType.adtOption();
+            
+            // Generate constructor functions for each ADT variant
+            const constructorFunctions = constructors.map(option => {
+                let constructorName: string;
+                let params: string = "";
+                let implementation: string = "";
+                
+                if (option instanceof parser.AdtOptionAnonymousRecordContext) {
+                    constructorName = option.IDENTIFIER().getText();
+                    params = "value";
+                    implementation = `return { type: "${constructorName}", value };`;
+                } 
+                else if (option instanceof parser.AdtOptionNamedTypeContext || 
+                         option instanceof parser.AdtOptionPrimitiveTypeContext) {
+                    constructorName = option.IDENTIFIER()[0].getText();
+                    params = "value";
+                    implementation = `return { type: "${constructorName}", value };`;
+                }
+                else if (option instanceof parser.AdtOptionNoArgContext) {
+                    constructorName = option.IDENTIFIER().getText();
+                    implementation = `return { type: "${constructorName}" };`;
+                }
+                else {
+                    return ""; // Unknown option type
+                }
+                
+                return `${this.indent()}const ${constructorName} = ${params ? `(${params})` : "()"} => { ${implementation} };`;
+            }).filter(Boolean).join("\n");
+            
+            return constructorFunctions;
+        }
+        
+        return `${this.indent()}/* Type Erasure: ${typeName} */`; // Placeholder for other types
     }
 
     visitImportStmt(ctx: parser.ImportStmtContext): string {
