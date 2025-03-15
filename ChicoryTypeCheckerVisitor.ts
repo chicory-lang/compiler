@@ -297,8 +297,16 @@ export class ChicoryTypeChecker {
                 // Make sure we preserve type parameters in function types
                 return { 
                     kind: 'function', 
-                    params: typeDef.params, 
-                    return: typeDef.return 
+                    params: typeDef.params.map(p => {
+                        // Ensure type parameters are preserved
+                        if (p.kind === 'typeParam') {
+                            return { kind: 'typeParam', name: p.name };
+                        }
+                        return p;
+                    }), 
+                    return: typeDef.return.kind === 'typeParam' 
+                        ? { kind: 'typeParam', name: typeDef.return.name }
+                        : typeDef.return
                 };
             case 'adt': return { kind: 'adt', name: typeName };
             case 'generic': return { kind: 'generic', base: typeDef.base, typeArgs: typeDef.typeArgs };
@@ -306,14 +314,7 @@ export class ChicoryTypeChecker {
     }
 
     private visitTypeExpr(ctx: parser.TypeExprContext, typeName?: string, typeParams: string[] = []): TypeDef {
-        // Create a scope for type parameters if they exist
-        const typeParamScope = new Map<string, Type>();
-        typeParams.forEach(param => {
-            typeParamScope.set(param, { kind: 'typeParam', name: param });
-        });
-        
-        // Handle direct type parameter references
-        // This is a critical check for cases like (S, A) => S where S is a type parameter
+        // Handle direct type parameter references first
         const text = ctx.getText();
         if (typeParams.includes(text)) {
             return { 
@@ -322,6 +323,12 @@ export class ChicoryTypeChecker {
                 typeParam: text
             } as any;
         }
+        
+        // Create a scope for type parameters if they exist
+        const typeParamScope = new Map<string, Type>();
+        typeParams.forEach(param => {
+            typeParamScope.set(param, { kind: 'typeParam', name: param });
+        });
         
         // Special case for direct identifier references
         if (ctx.getChildCount() === 1 && ctx.getChild(0) instanceof TerminalNode) {
@@ -367,7 +374,7 @@ export class ChicoryTypeChecker {
                     
                     // Direct check for type parameter
                     if (typeParamsList.includes(typeText)) {
-                        paramTypes.push(typeParamScope.get(typeText)!);
+                        paramTypes.push({ kind: 'typeParam', name: typeText });
                     } else {
                         const paramType = this.typeDefToType(this.visitTypeExpr(typeExpr, undefined, typeParamsList), '');
                         paramTypes.push(paramType);
@@ -385,7 +392,7 @@ export class ChicoryTypeChecker {
             return { 
                 kind: 'function', 
                 params: paramTypes, 
-                return: typeParamScope.get(returnTypeText)! 
+                return: { kind: 'typeParam', name: returnTypeText }
             };
         }
         
