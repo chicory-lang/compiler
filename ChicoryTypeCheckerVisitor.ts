@@ -338,6 +338,12 @@ export class ChicoryTypeChecker {
             if (typeDefEntry) {
                 return typeDefEntry.def;
             }
+            
+            // If it's not a defined type and not a type parameter, it's an error
+            // (unless we're in a function type, where it might be a generic parameter)
+            if (!ctx.parent?.parent?.parent instanceof parser.FunctionTypeContext) {
+                this.errors.push({ message: `Undefined type: ${text}`, context: ctx });
+            }
         }
         
         if (ctx.adtType()) {
@@ -361,6 +367,9 @@ export class ChicoryTypeChecker {
         const paramTypes: Type[] = [];
         const typeParamsList = Array.from(typeParamScope.keys());
         
+        // Collect implicit type parameters from the function signature
+        const implicitTypeParams = new Set<string>();
+        
         console.log(`Processing function type with type parameters: ${typeParamsList.join(', ')}`);
         
         // Process parameters if they exist
@@ -382,8 +391,17 @@ export class ChicoryTypeChecker {
                         console.log(`Found type parameter in function param: ${typeText}`);
                         paramTypes.push({ kind: 'typeParam', name: typeText });
                     } else {
-                        const paramType = this.typeDefToType(this.visitTypeExpr(typeExpr, undefined, typeParamsList), '');
-                        paramTypes.push(paramType);
+                        // Check if it's a defined type
+                        const typeDefEntry = this.typeDefs.get(typeText);
+                        if (!typeDefEntry && typeText.length === 1 && /[A-Z]/.test(typeText)) {
+                            // If it's a single uppercase letter and not defined, treat as implicit type parameter
+                            console.log(`Found implicit type parameter in function param: ${typeText}`);
+                            implicitTypeParams.add(typeText);
+                            paramTypes.push({ kind: 'typeParam', name: typeText });
+                        } else {
+                            const paramType = this.typeDefToType(this.visitTypeExpr(typeExpr, undefined, typeParamsList), '');
+                            paramTypes.push(paramType);
+                        }
                     }
                 }
             });
@@ -405,8 +423,23 @@ export class ChicoryTypeChecker {
             };
         }
         
+        // Check if return type is an implicit type parameter
+        if (!this.typeDefs.get(returnTypeText) && 
+            (implicitTypeParams.has(returnTypeText) || 
+             (returnTypeText.length === 1 && /[A-Z]/.test(returnTypeText)))) {
+            // If it's a single uppercase letter and not defined, treat as implicit type parameter
+            console.log(`Found implicit type parameter in return position: ${returnTypeText}`);
+            implicitTypeParams.add(returnTypeText);
+            return { 
+                kind: 'function', 
+                params: paramTypes, 
+                return: { kind: 'typeParam', name: returnTypeText }
+            };
+        }
+        
         // For more complex return types, we need to pass the type parameter scope
-        const returnTypeDef = this.visitTypeExpr(returnTypeExpr, undefined, typeParamsList);
+        const combinedTypeParams = [...typeParamsList, ...Array.from(implicitTypeParams)];
+        const returnTypeDef = this.visitTypeExpr(returnTypeExpr, undefined, combinedTypeParams);
         const returnType = this.typeDefToType(returnTypeDef, '');
         
         return { 
