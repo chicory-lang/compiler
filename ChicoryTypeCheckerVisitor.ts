@@ -1163,9 +1163,31 @@ export class ChicoryTypeChecker {
         }
     }
 
+    // List of standard HTML elements that should be allowed without definition
+    private htmlElements = new Set([
+        'a', 'abbr', 'address', 'area', 'article', 'aside', 'audio', 'b', 'base', 'bdi', 'bdo',
+        'blockquote', 'body', 'br', 'button', 'canvas', 'caption', 'cite', 'code', 'col', 'colgroup',
+        'data', 'datalist', 'dd', 'del', 'details', 'dfn', 'dialog', 'div', 'dl', 'dt', 'em', 'embed',
+        'fieldset', 'figcaption', 'figure', 'footer', 'form', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
+        'head', 'header', 'hr', 'html', 'i', 'iframe', 'img', 'input', 'ins', 'kbd', 'label', 'legend',
+        'li', 'link', 'main', 'map', 'mark', 'meta', 'meter', 'nav', 'noscript', 'object', 'ol',
+        'optgroup', 'option', 'output', 'p', 'param', 'picture', 'pre', 'progress', 'q', 'rp', 'rt',
+        'ruby', 's', 'samp', 'script', 'section', 'select', 'small', 'source', 'span', 'strong',
+        'style', 'sub', 'summary', 'sup', 'svg', 'table', 'tbody', 'td', 'template', 'textarea',
+        'tfoot', 'th', 'thead', 'time', 'title', 'tr', 'track', 'u', 'ul', 'var', 'video', 'wbr'
+    ]);
+
     private visitJsxExpr(ctx: parser.JsxExprContext): Type {
         if (ctx.jsxSelfClosingElement()) {
             const componentName = ctx.jsxSelfClosingElement()!.IDENTIFIER().getText();
+            // Check if it's a standard HTML element
+            if (this.htmlElements.has(componentName.toLowerCase())) {
+                // Process attributes but don't check component type
+                this.visitJsxAttributes(ctx.jsxSelfClosingElement()!.jsxAttributes());
+                return { kind: 'primitive', name: 'jsx' };
+            }
+            
+            // Otherwise, it's a custom component
             const entry = this.lookupVariable(componentName);
             if (!entry) {
                 this.errors.push({ message: `Undefined component ${componentName}`, context: ctx });
@@ -1176,6 +1198,15 @@ export class ChicoryTypeChecker {
             return { kind: 'primitive', name: 'jsx' };
         } else if (ctx.jsxOpeningElement()) {
             const componentName = ctx.jsxOpeningElement()!.IDENTIFIER().getText();
+            // Check if it's a standard HTML element
+            if (this.htmlElements.has(componentName.toLowerCase())) {
+                // Process attributes and children but don't check component type
+                this.visitJsxAttributes(ctx.jsxOpeningElement()!.jsxAttributes());
+                ctx.jsxChild().forEach(child => this.visitJsxChild(child));
+                return { kind: 'primitive', name: 'jsx' };
+            }
+            
+            // Otherwise, it's a custom component
             const entry = this.lookupVariable(componentName);
             if (!entry) {
                 this.errors.push({ message: `Undefined component ${componentName}`, context: ctx });
