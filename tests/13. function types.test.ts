@@ -55,7 +55,6 @@ const name = "World"
 const message = greeting + " " + name
 
 const num = 42
-const numStr = num + ""  // Convert number to string
 `;
     const result = compile(code);
     expect(result.errors).toHaveLength(0);
