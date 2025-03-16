@@ -373,99 +373,123 @@ export class ChicoryTypeChecker {
         return { kind: 'primitive', name: 'number' };
     }
 
-    private visitFunctionType(ctx: parser.FunctionTypeContext, typeParamScope: Map<string, Type> = new Map()): TypeDef {
-        const paramTypes: Type[] = [];
-        const typeParamsList = Array.from(typeParamScope.keys());
+    // Helper method to collect type parameters from a function signature
+    private collectFunctionTypeParams(
+        ctx: parser.FunctionTypeContext, 
+        existingParams: Set<string>
+    ): Set<string> {
+        const functionTypeParams = new Set<string>(existingParams);
         
-        // Collect all identifiers in the function signature as potential type parameters
-        const functionTypeParams = new Set<string>(typeParamsList);
-        
-        // First pass: collect all potential type parameters from the function signature
+        // Check parameters for potential type parameters
         ctx.typeParam().forEach(param => {
             if (param instanceof parser.UnnamedTypeParamContext) {
-                const typeText = param.typeExpr().getText();
+                const typeExpr = param.typeExpr();
+                const typeText = typeExpr.getText();
+                
                 // If it's an identifier and not a defined type, it's likely a type parameter
-                if (param.typeExpr().getChildCount() === 1 && 
-                    param.typeExpr().getChild(0) instanceof TerminalNode &&
+                if (typeExpr.getChildCount() === 1 && 
+                    typeExpr.getChild(0) instanceof TerminalNode &&
                     !this.typeDefs.get(typeText)) {
                     functionTypeParams.add(typeText);
                 }
             }
         });
         
-        // Also check the return type
-        const returnTypeText = ctx.typeExpr().getText();
-        if (ctx.typeExpr().getChildCount() === 1 && 
-            ctx.typeExpr().getChild(0) instanceof TerminalNode &&
+        // Check return type for potential type parameters
+        const returnTypeExpr = ctx.typeExpr();
+        const returnTypeText = returnTypeExpr.getText();
+        
+        if (returnTypeExpr.getChildCount() === 1 && 
+            returnTypeExpr.getChild(0) instanceof TerminalNode &&
             !this.typeDefs.get(returnTypeText)) {
             functionTypeParams.add(returnTypeText);
         }
         
-        // Second pass: process parameters with the complete set of type parameters
-        if (ctx.typeParam()) {
-            ctx.typeParam().forEach(param => {
-                if (param instanceof parser.NamedTypeParamContext) {
-                    // Named parameter (with type annotation)
-                    const paramType = this.typeDefToType(
-                        this.visitTypeExpr(param.typeExpr(), undefined, Array.from(functionTypeParams)), 
-                        ''
-                    );
-                    paramTypes.push(paramType);
-                } else if (param instanceof parser.UnnamedTypeParamContext) {
-                    // Unnamed parameter (just a type)
-                    const typeExpr = param.typeExpr();
-                    const typeText = typeExpr.getText();
-                    
-                    // Check if it's a type parameter
-                    if (functionTypeParams.has(typeText)) {
-                        paramTypes.push({ kind: 'typeParam', name: typeText });
-                    } else {
-                        // Check if it's a defined type
-                        const typeDefEntry = this.typeDefs.get(typeText);
-                        if (typeDefEntry) {
-                            // It's a user-defined type
-                            const paramType = this.typeDefToType(typeDefEntry.def, typeText);
-                            paramTypes.push(paramType);
-                        } else {
-                            // Otherwise process it normally
-                            const paramType = this.typeDefToType(
-                                this.visitTypeExpr(typeExpr, undefined, Array.from(functionTypeParams)), 
-                                ''
-                            );
-                            paramTypes.push(paramType);
-                        }
-                    }
-                }
-            });
+        return functionTypeParams;
+    }
+    
+    // Helper method to process a function parameter
+    private processFunctionParam(
+        param: parser.TypeParamContext, 
+        functionTypeParams: Set<string>
+    ): Type {
+        const typeParamArray = Array.from(functionTypeParams);
+        
+        if (param instanceof parser.NamedTypeParamContext) {
+            // Named parameter (with type annotation)
+            return this.typeDefToType(
+                this.visitTypeExpr(param.typeExpr(), undefined, typeParamArray), 
+                ''
+            );
+        } else if (param instanceof parser.UnnamedTypeParamContext) {
+            // Unnamed parameter (just a type)
+            const typeExpr = param.typeExpr();
+            const typeText = typeExpr.getText();
+            
+            // Check if it's a type parameter
+            if (functionTypeParams.has(typeText)) {
+                return { kind: 'typeParam', name: typeText };
+            }
+            
+            // Check if it's a defined type
+            const typeDefEntry = this.typeDefs.get(typeText);
+            if (typeDefEntry) {
+                // It's a user-defined type
+                return this.typeDefToType(typeDefEntry.def, typeText);
+            }
+            
+            // Otherwise process it normally
+            return this.typeDefToType(
+                this.visitTypeExpr(typeExpr, undefined, typeParamArray), 
+                ''
+            );
         }
         
-        // Process return type with the complete set of type parameters
-        const returnTypeExpr = ctx.typeExpr();
+        // This should never happen if the grammar is correct
+        return { kind: 'primitive', name: 'unit' };
+    }
+    
+    // Helper method to process a function return type
+    private processFunctionReturnType(
+        returnTypeExpr: parser.TypeExprContext, 
+        functionTypeParams: Set<string>
+    ): Type {
+        const returnTypeText = returnTypeExpr.getText();
+        const typeParamArray = Array.from(functionTypeParams);
         
         // Check if return type is a type parameter
         if (functionTypeParams.has(returnTypeText)) {
-            return { 
-                kind: 'function', 
-                params: paramTypes, 
-                return: { kind: 'typeParam', name: returnTypeText }
-            };
+            return { kind: 'typeParam', name: returnTypeText };
         }
         
         // Check if return type is a defined type
         const returnTypeDefEntry = this.typeDefs.get(returnTypeText);
         if (returnTypeDefEntry) {
             // It's a user-defined type
-            return { 
-                kind: 'function', 
-                params: paramTypes, 
-                return: this.typeDefToType(returnTypeDefEntry.def, returnTypeText)
-            };
+            return this.typeDefToType(returnTypeDefEntry.def, returnTypeText);
         }
         
         // For more complex return types
-        const returnTypeDef = this.visitTypeExpr(returnTypeExpr, undefined, Array.from(functionTypeParams));
-        const returnType = this.typeDefToType(returnTypeDef, '');
+        const returnTypeDef = this.visitTypeExpr(returnTypeExpr, undefined, typeParamArray);
+        return this.typeDefToType(returnTypeDef, '');
+    }
+    
+    private visitFunctionType(ctx: parser.FunctionTypeContext, typeParamScope: Map<string, Type> = new Map()): TypeDef {
+        // Step 1: Collect all type parameters from the function signature
+        const functionTypeParams = this.collectFunctionTypeParams(
+            ctx, 
+            new Set(Array.from(typeParamScope.keys()))
+        );
         
+        // Step 2: Process parameters with the complete set of type parameters
+        const paramTypes: Type[] = ctx.typeParam().map(param => 
+            this.processFunctionParam(param, functionTypeParams)
+        );
+        
+        // Step 3: Process the return type
+        const returnType = this.processFunctionReturnType(ctx.typeExpr(), functionTypeParams);
+        
+        // Step 4: Create and return the function type definition
         return { 
             kind: 'function', 
             params: paramTypes, 
