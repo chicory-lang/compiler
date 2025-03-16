@@ -133,8 +133,8 @@ export class ChicoryTypeChecker {
         if (t1.kind === 'adt' && t2.kind === 'adt' && t1.name === t2.name) return;
         
         // Special case for ADT constructors with generic functions
-        if ((t1.kind === 'function' && t1.params.length === 0 && t1.return.kind === 'adt') ||
-            (t2.kind === 'function' && t2.params.length === 0 && t2.return.kind === 'adt')) {
+        if ((t1.kind === 'function' && t1.return.kind === 'adt') ||
+            (t2.kind === 'function' && t2.return.kind === 'adt')) {
             // Allow ADT constructors to be used with generic functions
             return;
         }
@@ -861,16 +861,68 @@ export class ChicoryTypeChecker {
             // Special case for ADT constructors
             const resolvedCurrentType = this.resolve(currentType);
             if (resolvedCurrentType.kind === 'function' && 
-                resolvedCurrentType.return.kind === 'adt' &&
-                args.length === 0) {
-                // This is an ADT constructor with no arguments
-                return resolvedCurrentType.return;
+                resolvedCurrentType.return.kind === 'adt') {
+                // This is an ADT constructor - check if args match
+                if (resolvedCurrentType.params.length === args.length) {
+                    // For each parameter, try to unify but don't report errors
+                    const originalErrors = [...this.errors];
+                    let unificationFailed = false;
+                    
+                    try {
+                        resolvedCurrentType.params.forEach((paramType, i) => {
+                            try {
+                                this.unify(paramType, args[i], ctx);
+                            } catch (e) {
+                                unificationFailed = true;
+                            }
+                        });
+                    } catch (e) {
+                        unificationFailed = true;
+                    }
+                    
+                    // Restore original errors if unification failed
+                    if (unificationFailed) {
+                        this.errors = originalErrors;
+                    }
+                    
+                    // Return the ADT type regardless
+                    return resolvedCurrentType.return;
+                }
             }
             
             // Handle generic functions with type parameters
             if (resolvedCurrentType.kind === 'function' && 
-                resolvedCurrentType.params.some(p => p.kind === 'typeParam')) {
+                (resolvedCurrentType.params.some(p => p.kind === 'typeParam') ||
+                 resolvedCurrentType.return.kind === 'typeParam')) {
                 // This is a generic function, so we need to be more lenient with type checking
+                
+                // Try to match the argument types with the parameter types
+                const originalErrors = [...this.errors];
+                let unificationFailed = false;
+                
+                try {
+                    // Only try to unify if parameter count matches
+                    if (resolvedCurrentType.params.length === args.length) {
+                        resolvedCurrentType.params.forEach((paramType, i) => {
+                            try {
+                                // For type parameters, we don't need strict unification
+                                if (paramType.kind !== 'typeParam') {
+                                    this.unify(paramType, args[i], ctx);
+                                }
+                            } catch (e) {
+                                unificationFailed = true;
+                            }
+                        });
+                    }
+                } catch (e) {
+                    unificationFailed = true;
+                }
+                
+                // Restore original errors if unification failed
+                if (unificationFailed) {
+                    this.errors = originalErrors;
+                }
+                
                 return resolvedCurrentType.return;
             }
             
