@@ -175,24 +175,64 @@ export class ChicoryTypeChecker {
     }
 
     private visitImportStmt(ctx: parser.ImportStmtContext): void {
-        // Handle default import (if present)
-        if (ctx.IDENTIFIER()) {
-            const defaultImport = ctx.IDENTIFIER()!.getText();
-            this.declareSymbol(defaultImport, {
-                kind: 'external',
-                module: ctx.STRING().getText()
-            }, ctx);
-        }
-    
-        // Handle destructuring imports
-        const destructuring = ctx.destructuringImportIdentifier();
-        if (destructuring) {
-            destructuring.IDENTIFIER().forEach(id => {
-                this.declareSymbol(id.getText(), {
+        // Handle regular imports
+        if (ctx.getText().startsWith('import')) {
+            // Handle default import (if present)
+            if (ctx.IDENTIFIER()) {
+                const defaultImport = ctx.IDENTIFIER()!.getText();
+                this.declareSymbol(defaultImport, {
                     kind: 'external',
                     module: ctx.STRING().getText()
                 }, ctx);
-            });
+            }
+        
+            // Handle destructuring imports
+            const destructuring = ctx.destructuringImportIdentifier();
+            if (destructuring) {
+                destructuring.IDENTIFIER().forEach(id => {
+                    this.declareSymbol(id.getText(), {
+                        kind: 'external',
+                        module: ctx.STRING().getText()
+                    }, ctx);
+                });
+            }
+        }
+        // Handle binding imports
+        else if (ctx.getText().startsWith('bind')) {
+            // Handle default binding import (if present)
+            if (ctx.IDENTIFIER() && ctx.typeExpr()) {
+                const name = ctx.IDENTIFIER()!.getText();
+                const typeExpr = ctx.typeExpr()!;
+                
+                // Create a type for the binding based on the type expression
+                const typeParams: string[] = [];
+                const bindingType = this.typeDefToType(
+                    this.visitTypeExpr(typeExpr, undefined, typeParams),
+                    ''
+                );
+                
+                // Declare the symbol with the specified type
+                this.declareSymbol(name, bindingType, ctx);
+            }
+            
+            // Handle destructuring binding imports
+            const binding = ctx.bindingImportIdentifier();
+            if (binding) {
+                binding.bindingIdentifier().forEach(bindingId => {
+                    const name = bindingId.IDENTIFIER().getText();
+                    const typeExpr = bindingId.typeExpr();
+                    
+                    // Create a type for the binding based on the type expression
+                    const typeParams: string[] = [];
+                    const bindingType = this.typeDefToType(
+                        this.visitTypeExpr(typeExpr, undefined, typeParams),
+                        ''
+                    );
+                    
+                    // Declare the symbol with the specified type
+                    this.declareSymbol(name, bindingType, ctx);
+                });
+            }
         }
     }
 
@@ -684,22 +724,22 @@ export class ChicoryTypeChecker {
     }
 
     private visitTupleType(ctx: parser.TupleTypeContext, typeParamScope: Map<string, Type> = new Map()): TypeDef {
-        const elements = ctx.tupleField().map(field => this.visitTupleField(field, typeParamScope));
-        return { kind: 'tuple', elements };
-    }
-
-    private visitTupleField(ctx: parser.TupleFieldContext, typeParamScope: Map<string, Type> = new Map()): Type {
-        if (ctx.primitiveType()) return this.visitPrimitiveType(ctx.primitiveType()!) as Type;
-        if (ctx.IDENTIFIER()) {
-            const typeName = ctx.IDENTIFIER()!.getText();
-            // Check if it's a type parameter
-            if (typeParamScope.has(typeName)) {
-                return typeParamScope.get(typeName)!;
+        const elements: Type[] = [];
+        
+        // Process each type expression in the tuple
+        for (const typeExpr of ctx.typeExpr()) {
+            const typeText = typeExpr.getText();
+            
+            // Check if it's a direct reference to a type parameter
+            if (typeText && typeParamScope.has(typeText)) {
+                elements.push(typeParamScope.get(typeText)!);
+            } else {
+                const typeDef = this.visitTypeExpr(typeExpr, undefined, Array.from(typeParamScope.keys()));
+                elements.push(this.typeDefToType(typeDef, ''));
             }
-            return this.lookupType(typeName, ctx);
         }
-        this.errors.push({ message: 'Invalid tuple field', context: ctx });
-        return this.freshVar();
+        
+        return { kind: 'tuple', elements };
     }
 
     private visitPrimitiveType(ctx: parser.PrimitiveTypeContext): TypeDef {

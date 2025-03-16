@@ -110,19 +110,45 @@ export class ChicoryParserVisitor {
     }
 
     visitImportStmt(ctx: parser.ImportStmtContext): string {
-        const defaultImport = ctx.IDENTIFIER() ? ctx.IDENTIFIER()!.getText() : "";
-        const destructuring = ctx.destructuringImportIdentifier()
-            ? this.visitDestructuringImportIdentifier(ctx.destructuringImportIdentifier()!)
-            : "";
-        const body = [defaultImport, destructuring].filter(Boolean).join(", ");
-        const from = ctx.STRING().getText();
-        return `${this.indent()}import ${body} from ${from}`;
+        // Handle regular imports
+        if (ctx.getText().startsWith('import')) {
+            const defaultImport = ctx.IDENTIFIER() ? ctx.IDENTIFIER()!.getText() : "";
+            const destructuring = ctx.destructuringImportIdentifier()
+                ? this.visitDestructuringImportIdentifier(ctx.destructuringImportIdentifier()!)
+                : "";
+            const body = [defaultImport, destructuring].filter(Boolean).join(", ");
+            const from = ctx.STRING().getText();
+            return `${this.indent()}import ${body} from ${from}`;
+        }
+        
+        // Handle binding imports
+        else if (ctx.getText().startsWith('bind')) {
+            const defaultImport = ctx.IDENTIFIER() ? ctx.IDENTIFIER()!.getText() : "";
+            const destructuring = ctx.bindingImportIdentifier()
+                ? this.visitBindingImportIdentifier(ctx.bindingImportIdentifier()!)
+                : "";
+            const body = [defaultImport, destructuring].filter(Boolean).join(", ");
+            const from = ctx.STRING().getText();
+            return `${this.indent()}import ${body} from ${from}`;
+        }
+        
+        return `${this.indent()}/* Unknown import statement */`;
     }
 
     visitDestructuringImportIdentifier(ctx: parser.DestructuringImportIdentifierContext): string {
         const identifiers = ctx.IDENTIFIER();
         return identifiers.length > 0
             ? `{ ${identifiers.map(id => id.getText()).join(", ")} }`
+            : "";
+    }
+    
+    visitBindingImportIdentifier(ctx: parser.BindingImportIdentifierContext): string {
+        const bindingIdentifiers = ctx.bindingIdentifier().map(binding => 
+            binding.IDENTIFIER().getText()
+        );
+        
+        return bindingIdentifiers.length > 0
+            ? `{ ${bindingIdentifiers.join(", ")} }`
             : "";
     }
 

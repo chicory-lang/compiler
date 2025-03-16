@@ -2,7 +2,7 @@ import compile from "./compile";
 
 const yellowBoldTermPrefix = "\x1b[33m\x1b[1m";
 const resetStyle = "\x1b[0m";
-const yellow = (str) => yellowBoldTermPrefix + str + resetStyle;
+const yellow = (str: string) => yellowBoldTermPrefix + str + resetStyle;
 
 const usageInstructions = `
 Usage:

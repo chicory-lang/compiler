@@ -48,9 +48,7 @@ recordType: '{' NL* recordTypeAnontation (',' NL* recordTypeAnontation)* ','? NL
 
 recordTypeAnontation: IDENTIFIER ':' (primitiveType | recordType | IDENTIFIER);
 
-tupleType: '[' NL* tupleField (',' NL* tupleField)* ','? NL* ']';
-
-tupleField: primitiveType | IDENTIFIER;
+tupleType: '[' NL* typeExpr (',' NL* typeExpr)* ','? NL* ']';
 
 primitiveType: 'number' | 'string' | 'boolean' | 'unit';
 
@@ -69,10 +67,21 @@ importStmt
     : 'import' IDENTIFIER 'from' STRING
     | 'import' IDENTIFIER ',' destructuringImportIdentifier 'from' STRING
     | 'import' destructuringImportIdentifier 'from' STRING
+    | 'bind' IDENTIFIER 'as' typeExpr 'from' STRING
+    | 'bind' bindingImportIdentifier 'from' STRING
+    | 'bind' IDENTIFIER 'as' typeExpr ',' bindingImportIdentifier 'from' STRING
     ;
 
 destructuringImportIdentifier:
     | '{' NL* IDENTIFIER (',' NL* IDENTIFIER)* NL* '}'
+    ;
+
+bindingImportIdentifier:
+    '{' NL* bindingIdentifier (',' NL* bindingIdentifier)* NL* '}'
+    ;
+
+bindingIdentifier:
+    IDENTIFIER 'as' typeExpr
     ;
 
 exportStmt

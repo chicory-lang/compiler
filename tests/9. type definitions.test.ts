@@ -21,7 +21,9 @@ test("tuple type", () => {
 
 test("enum type", () => {
   const { code } = compile(`type MyEnum = Option1 | Option2 | Option3`);
-  expect(code).toBe(`/* Type Erasure: MyEnum */`);
+  expect(code).toBe(`const Option1 = () => { return { type: "Option1" }; };
+const Option2 = () => { return { type: "Option2" }; };
+const Option3 = () => { return { type: "Option3" }; };`);
 });
 
 test("adt type", () => {
@@ -30,5 +32,8 @@ test("adt type", () => {
     | ValueB({width: number, height: number})
     | ValueC(SomeType)
     | ValueD`);
-  expect(code).toBe(`/* Type Erasure: MyAdt */`);
+  expect(code).toBe(`const ValueA = (value) => { return { type: "ValueA", value }; };
+const ValueB = (value) => { return { type: "ValueB", value }; };
+const ValueC = (value) => { return { type: "ValueC", value }; };
+const ValueD = () => { return { type: "ValueD" }; };`);
 });
