@@ -132,7 +132,7 @@ export class ChicoryParserVisitor {
             return `${this.indent()}import ${body} from ${from}`;
         }
         
-        return `${this.indent()}/* Unknown import statement */`;
+        throw new Error("Invalid import statement");
     }
 
     visitDestructuringImportIdentifier(ctx: parser.DestructuringImportIdentifierContext): string {
