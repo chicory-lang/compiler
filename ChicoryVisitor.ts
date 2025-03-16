@@ -110,19 +110,37 @@ export class ChicoryParserVisitor {
     }
 
     visitImportStmt(ctx: parser.ImportStmtContext): string {
-        const defaultImport = ctx.IDENTIFIER() ? ctx.IDENTIFIER()!.getText() : "";
-        const destructuring = ctx.destructuringImportIdentifier()
-            ? this.visitDestructuringImportIdentifier(ctx.destructuringImportIdentifier()!)
-            : "";
-        const body = [defaultImport, destructuring].filter(Boolean).join(", ");
+        // Handle regular imports
+        if (!ctx.bindingImportIdentifier()) {
+            const defaultImport = ctx.IDENTIFIER() ? ctx.IDENTIFIER()!.getText() : "";
+            const destructuring = ctx.destructuringImportIdentifier()
+                ? this.visitDestructuringImportIdentifier(ctx.destructuringImportIdentifier()!)
+                : "";
+            const body = [defaultImport, destructuring].filter(Boolean).join(", ");
+            const from = ctx.STRING().getText();
+            return `${this.indent()}import ${body} from ${from}`;
+        }
+        
+        // Handle binding imports
+        const bindingIdentifiers = this.visitBindingImportIdentifier(ctx.bindingImportIdentifier()!);
         const from = ctx.STRING().getText();
-        return `${this.indent()}import ${body} from ${from}`;
+        return `${this.indent()}import ${bindingIdentifiers} from ${from}`;
     }
 
     visitDestructuringImportIdentifier(ctx: parser.DestructuringImportIdentifierContext): string {
         const identifiers = ctx.IDENTIFIER();
         return identifiers.length > 0
             ? `{ ${identifiers.map(id => id.getText()).join(", ")} }`
+            : "";
+    }
+    
+    visitBindingImportIdentifier(ctx: parser.BindingImportIdentifierContext): string {
+        const bindingIdentifiers = ctx.bindingIdentifier().map(binding => 
+            binding.IDENTIFIER().getText()
+        );
+        
+        return bindingIdentifiers.length > 0
+            ? `{ ${bindingIdentifiers.join(", ")} }`
             : "";
     }
 

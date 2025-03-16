@@ -69,10 +69,19 @@ importStmt
     : 'import' IDENTIFIER 'from' STRING
     | 'import' IDENTIFIER ',' destructuringImportIdentifier 'from' STRING
     | 'import' destructuringImportIdentifier 'from' STRING
+    | 'bind' bindingImportIdentifier 'from' STRING
     ;
 
 destructuringImportIdentifier:
     | '{' NL* IDENTIFIER (',' NL* IDENTIFIER)* NL* '}'
+    ;
+
+bindingImportIdentifier:
+    '{' NL* bindingIdentifier (',' NL* bindingIdentifier)* NL* '}'
+    ;
+
+bindingIdentifier:
+    IDENTIFIER 'as' typeExpr
     ;
 
 exportStmt

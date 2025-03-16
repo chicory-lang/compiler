@@ -194,6 +194,25 @@ export class ChicoryTypeChecker {
                 }, ctx);
             });
         }
+        
+        // Handle binding imports
+        const binding = ctx.bindingImportIdentifier();
+        if (binding) {
+            binding.bindingIdentifier().forEach(bindingId => {
+                const name = bindingId.IDENTIFIER().getText();
+                const typeExpr = bindingId.typeExpr();
+                
+                // Create a type for the binding based on the type expression
+                const typeParams: string[] = [];
+                const bindingType = this.typeDefToType(
+                    this.visitTypeExpr(typeExpr, undefined, typeParams),
+                    ''
+                );
+                
+                // Declare the symbol with the specified type
+                this.declareSymbol(name, bindingType, ctx);
+            });
+        }
     }
 
     private declareSymbol(
