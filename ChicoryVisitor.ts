@@ -111,7 +111,7 @@ export class ChicoryParserVisitor {
 
     visitImportStmt(ctx: parser.ImportStmtContext): string {
         // Handle regular imports
-        if (!ctx.bindingImportIdentifier()) {
+        if (ctx.getText().startsWith('import')) {
             const defaultImport = ctx.IDENTIFIER() ? ctx.IDENTIFIER()!.getText() : "";
             const destructuring = ctx.destructuringImportIdentifier()
                 ? this.visitDestructuringImportIdentifier(ctx.destructuringImportIdentifier()!)
@@ -122,9 +122,17 @@ export class ChicoryParserVisitor {
         }
         
         // Handle binding imports
-        const bindingIdentifiers = this.visitBindingImportIdentifier(ctx.bindingImportIdentifier()!);
-        const from = ctx.STRING().getText();
-        return `${this.indent()}import ${bindingIdentifiers} from ${from}`;
+        else if (ctx.getText().startsWith('bind')) {
+            const defaultImport = ctx.IDENTIFIER() ? ctx.IDENTIFIER()!.getText() : "";
+            const destructuring = ctx.bindingImportIdentifier()
+                ? this.visitBindingImportIdentifier(ctx.bindingImportIdentifier()!)
+                : "";
+            const body = [defaultImport, destructuring].filter(Boolean).join(", ");
+            const from = ctx.STRING().getText();
+            return `${this.indent()}import ${body} from ${from}`;
+        }
+        
+        return `${this.indent()}/* Unknown import statement */`;
     }
 
     visitDestructuringImportIdentifier(ctx: parser.DestructuringImportIdentifierContext): string {
