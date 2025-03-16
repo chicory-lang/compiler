@@ -243,12 +243,6 @@ export class ChicoryTypeChecker {
             });
         }
         
-        // Create a scope for type parameters
-        const typeParamScope = new Map<string, Type>();
-        typeParams.forEach(param => {
-            typeParamScope.set(param, { kind: 'typeParam', name: param });
-        });
-        
         // Visit the type expression with type parameters
         const typeExpr = this.visitTypeExpr(ctx.typeExpr(), typeName, typeParams);
         
@@ -282,7 +276,10 @@ export class ChicoryTypeChecker {
     private typeDefToType(typeDef: TypeDef, typeName: string): Type {
         switch (typeDef.kind) {
             case 'primitive': 
-                if (typeDef.name === 'typeParam' && typeDef.typeParam) {
+                if (typeDef.name === 'typeParam') {
+                    if (!typeDef.typeParam) {
+                        throw new Error(`Type parameter ${typeDef.name} is not defined`);
+                    }
                     return { kind: 'typeParam', name: typeDef.typeParam };
                 }
                 return { kind: 'primitive', name: typeDef.name };
@@ -318,7 +315,7 @@ export class ChicoryTypeChecker {
                 kind: 'primitive', 
                 name: 'typeParam',
                 typeParam: text
-            } as any;
+            };
         }
         
         // Create a scope for type parameters if they exist
@@ -341,7 +338,7 @@ export class ChicoryTypeChecker {
                     kind: 'primitive', 
                     name: 'typeParam',
                     typeParam: text
-                } as any;
+                };
             }
             
             // Check if it's a type parameter from the function context
@@ -352,7 +349,7 @@ export class ChicoryTypeChecker {
                     kind: 'primitive', 
                     name: 'typeParam',
                     typeParam: text
-                } as any;
+                };
             }
             
             // If it's not a defined type and not a type parameter, it's an error
@@ -384,19 +381,17 @@ export class ChicoryTypeChecker {
         const functionTypeParams = new Set<string>(typeParamsList);
         
         // First pass: collect all potential type parameters from the function signature
-        if (ctx.typeParam()) {
-            ctx.typeParam().forEach(param => {
-                if (param instanceof parser.UnnamedTypeParamContext) {
-                    const typeText = param.typeExpr().getText();
-                    // If it's an identifier and not a defined type, it's likely a type parameter
-                    if (param.typeExpr().getChildCount() === 1 && 
-                        param.typeExpr().getChild(0) instanceof TerminalNode &&
-                        !this.typeDefs.get(typeText)) {
-                        functionTypeParams.add(typeText);
-                    }
+        ctx.typeParam().forEach(param => {
+            if (param instanceof parser.UnnamedTypeParamContext) {
+                const typeText = param.typeExpr().getText();
+                // If it's an identifier and not a defined type, it's likely a type parameter
+                if (param.typeExpr().getChildCount() === 1 && 
+                    param.typeExpr().getChild(0) instanceof TerminalNode &&
+                    !this.typeDefs.get(typeText)) {
+                    functionTypeParams.add(typeText);
                 }
-            });
-        }
+            }
+        });
         
         // Also check the return type
         const returnTypeText = ctx.typeExpr().getText();
@@ -693,7 +688,11 @@ export class ChicoryTypeChecker {
         const typeDef = typeDefEntry.def;
         switch (typeDef.kind) {
             case 'primitive': 
-                if (typeDef.name === 'typeParam' && typeDef.typeParam) {
+                if (typeDef.name === 'typeParam' ) {
+                    if (!typeDef.typeParam) {
+                        this.errors.push({ message: `Type parameter ${typeName} is not defined`, context });
+                        return this.freshVar();
+                    }
                     return { kind: 'typeParam', name: typeDef.typeParam };
                 }
                 return { kind: 'primitive', name: typeDef.name };
