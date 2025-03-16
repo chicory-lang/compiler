@@ -69,7 +69,9 @@ importStmt
     : 'import' IDENTIFIER 'from' STRING
     | 'import' IDENTIFIER ',' destructuringImportIdentifier 'from' STRING
     | 'import' destructuringImportIdentifier 'from' STRING
+    | 'bind' IDENTIFIER 'as' typeExpr 'from' STRING
     | 'bind' bindingImportIdentifier 'from' STRING
+    | 'bind' IDENTIFIER 'as' typeExpr ',' bindingImportIdentifier 'from' STRING
     ;
 
 destructuringImportIdentifier:
