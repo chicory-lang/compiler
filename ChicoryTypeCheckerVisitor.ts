@@ -243,13 +243,10 @@ export class ChicoryTypeChecker {
             });
         }
         
-        console.log(`Processing type definition: ${typeName}<${typeParams.join(', ')}>`);
-        
         // Create a scope for type parameters
         const typeParamScope = new Map<string, Type>();
         typeParams.forEach(param => {
             typeParamScope.set(param, { kind: 'typeParam', name: param });
-            console.log(`Registered type parameter: ${param}`);
         });
         
         // Visit the type expression with type parameters
@@ -317,7 +314,6 @@ export class ChicoryTypeChecker {
         
         // Check if this is a direct reference to a type parameter
         if (typeParams.includes(text)) {
-            console.log(`Found type parameter reference: ${text}`);
             return { 
                 kind: 'primitive', 
                 name: 'typeParam',
@@ -337,6 +333,15 @@ export class ChicoryTypeChecker {
             const typeDefEntry = this.typeDefs.get(text);
             if (typeDefEntry) {
                 return typeDefEntry.def;
+            }
+            
+            // If it's a single uppercase letter, it might be an implicit type parameter
+            if (text.length === 1 && /[A-Z]/.test(text)) {
+                return { 
+                    kind: 'primitive', 
+                    name: 'typeParam',
+                    typeParam: text
+                } as any;
             }
             
             // If it's not a defined type and not a type parameter, it's an error
@@ -370,8 +375,6 @@ export class ChicoryTypeChecker {
         // Collect implicit type parameters from the function signature
         const implicitTypeParams = new Set<string>();
         
-        console.log(`Processing function type with type parameters: ${typeParamsList.join(', ')}`);
-        
         // Process parameters if they exist
         if (ctx.typeParam()) {
             ctx.typeParam().forEach(param => {
@@ -384,21 +387,22 @@ export class ChicoryTypeChecker {
                     const typeExpr = param.typeExpr();
                     const typeText = typeExpr.getText();
                     
-                    console.log(`Checking parameter: ${typeText}`);
-                    
                     // Direct check for type parameter
                     if (typeParamsList.includes(typeText)) {
-                        console.log(`Found type parameter in function param: ${typeText}`);
                         paramTypes.push({ kind: 'typeParam', name: typeText });
                     } else {
                         // Check if it's a defined type
                         const typeDefEntry = this.typeDefs.get(typeText);
-                        if (!typeDefEntry && typeText.length === 1 && /[A-Z]/.test(typeText)) {
+                        if (typeDefEntry) {
+                            // It's a user-defined type
+                            const paramType = this.typeDefToType(typeDefEntry.def, typeText);
+                            paramTypes.push(paramType);
+                        } else if (typeText.length === 1 && /[A-Z]/.test(typeText)) {
                             // If it's a single uppercase letter and not defined, treat as implicit type parameter
-                            console.log(`Found implicit type parameter in function param: ${typeText}`);
                             implicitTypeParams.add(typeText);
                             paramTypes.push({ kind: 'typeParam', name: typeText });
                         } else {
+                            // Otherwise process it normally
                             const paramType = this.typeDefToType(this.visitTypeExpr(typeExpr, undefined, typeParamsList), '');
                             paramTypes.push(paramType);
                         }
@@ -411,11 +415,8 @@ export class ChicoryTypeChecker {
         const returnTypeExpr = ctx.typeExpr();
         const returnTypeText = returnTypeExpr.getText();
         
-        console.log(`Checking return type: ${returnTypeText}`);
-        
         // Direct check for type parameter in return position
         if (typeParamsList.includes(returnTypeText)) {
-            console.log(`Found type parameter in return position: ${returnTypeText}`);
             return { 
                 kind: 'function', 
                 params: paramTypes, 
@@ -423,12 +424,21 @@ export class ChicoryTypeChecker {
             };
         }
         
+        // Check if return type is a defined type
+        const returnTypeDefEntry = this.typeDefs.get(returnTypeText);
+        if (returnTypeDefEntry) {
+            // It's a user-defined type
+            return { 
+                kind: 'function', 
+                params: paramTypes, 
+                return: this.typeDefToType(returnTypeDefEntry.def, returnTypeText)
+            };
+        }
+        
         // Check if return type is an implicit type parameter
-        if (!this.typeDefs.get(returnTypeText) && 
-            (implicitTypeParams.has(returnTypeText) || 
-             (returnTypeText.length === 1 && /[A-Z]/.test(returnTypeText)))) {
+        if (implicitTypeParams.has(returnTypeText) || 
+            (returnTypeText.length === 1 && /[A-Z]/.test(returnTypeText))) {
             // If it's a single uppercase letter and not defined, treat as implicit type parameter
-            console.log(`Found implicit type parameter in return position: ${returnTypeText}`);
             implicitTypeParams.add(returnTypeText);
             return { 
                 kind: 'function', 
@@ -633,6 +643,11 @@ export class ChicoryTypeChecker {
     }
 
     private lookupType(typeName: string, context: ParserRuleContext): Type {
+        // Check if it's a single uppercase letter (potential type parameter)
+        if (typeName.length === 1 && /[A-Z]/.test(typeName)) {
+            return { kind: 'typeParam', name: typeName };
+        }
+        
         const typeDefEntry = this.typeDefs.get(typeName);
         if (!typeDefEntry) {
             this.errors.push({ message: `Undefined type ${typeName}`, context });
@@ -640,7 +655,11 @@ export class ChicoryTypeChecker {
         }
         const typeDef = typeDefEntry.def;
         switch (typeDef.kind) {
-            case 'primitive': return { kind: 'primitive', name: typeDef.name };
+            case 'primitive': 
+                if (typeDef.name === 'typeParam' && typeDef.typeParam) {
+                    return { kind: 'typeParam', name: typeDef.typeParam };
+                }
+                return { kind: 'primitive', name: typeDef.name };
             case 'record': return { kind: 'record', fields: typeDef.fields };
             case 'tuple': return { kind: 'tuple', elements: typeDef.elements };
             case 'adt': return { kind: 'adt', name: typeName };
