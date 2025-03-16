@@ -50,7 +50,7 @@ recordTypeAnontation: IDENTIFIER ':' (primitiveType | recordType | IDENTIFIER);
 
 tupleType: '[' NL* tupleField (',' NL* tupleField)* ','? NL* ']';
 
-tupleField: primitiveType | IDENTIFIER;
+tupleField: typeExpr;
 
 primitiveType: 'number' | 'string' | 'boolean' | 'unit';
 
