@@ -3,7 +3,7 @@ import { ChicoryLexer } from './generated/ChicoryLexer';
 import { ChicoryParser } from './generated/ChicoryParser';
 import { ChicoryParserVisitor } from './ChicoryVisitor';
 import { ChicoryTypeChecker } from './ChicoryTypeCheckerVisitor';
-import { LspDiagnostic } from './env';
+import { LspDiagnostic, CompilationError } from './env';
 
 const getRange = (ctx: ParserRuleContext, tokenStream: TokenStream) => {
     const {start, stop} = ctx.getSourceInterval()
@@ -15,7 +15,7 @@ const getRange = (ctx: ParserRuleContext, tokenStream: TokenStream) => {
     }
 }
 
-const compilerErrorToLspError = tokenStream => (e => ({
+const compilerErrorToLspError = (tokenStream: TokenStream) => ((e: CompilationError) => ({
     severity: 1, // 1 is error
     message: e.message as string,
     range: getRange(e.context, tokenStream),
