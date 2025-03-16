@@ -357,7 +357,34 @@ export class ChicoryTypeChecker {
         }
         
         if (ctx.adtType()) {
+            // Check if this is actually a reference to a type parameter
+            const text = ctx.getText();
+            if (typeParams.includes(text)) {
+                return { 
+                    kind: 'primitive', 
+                    name: 'typeParam',
+                    typeParam: text
+                };
+            }
+            
+            // Check if it's a reference to a defined type
+            const typeDefEntry = this.typeDefs.get(text);
+            if (typeDefEntry) {
+                return typeDefEntry.def;
+            }
+            
+            // Only treat it as an ADT if it's part of a type definition
             if (!typeName) {
+                // This might be a type parameter in a function signature
+                const functionTypeCtx = this.findParentOfType(ctx, parser.FunctionTypeContext);
+                if (functionTypeCtx) {
+                    return { 
+                        kind: 'primitive', 
+                        name: 'typeParam',
+                        typeParam: text
+                    };
+                }
+                
                 this.errors.push({ message: 'ADT type must be part of a type definition', context: ctx });
                 return { kind: 'primitive', name: 'number' };
             }
