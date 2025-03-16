@@ -5,8 +5,9 @@
   "scripts": {
     "antlr": "antlr4ng -Dlanguage=TypeScript -o generated/ -visitor -Xexact-output-dir grammar/Chicory.g4",
     "test": "bun test",
-    "generate:types": "bun x --package typescript --emitDeclarationOnly --declaration --skipLibCheck --outDir ./build compile.ts",
-    "build": "bun run antlr && bun test && bun run generate:types && bun build ./compile.ts --outdir=build && bun build ./compile.ts --format cjs --outfile=build/compile.cjs",
+    "generate:types": "bun x --package typescript --downlevelIteration --emitDeclarationOnly --declaration --skipLibCheck --outDir ./build compile.ts",
+    "generate:bundle": "bun build ./compile.ts --outdir=build && bun build ./compile.ts --format cjs --outfile=build/compile.cjs",
+    "build": "bun run antlr && bun test && bun run generate:types && bun run generate:bundle",
     "exec": "bun run execute"
   },
   "type": "module",

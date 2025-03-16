@@ -2,6 +2,8 @@ import { CharStream, CommonTokenStream, ParserRuleContext, ParseTreeWalker, Toke
 import { ChicoryLexer } from './generated/ChicoryLexer';
 import { ChicoryParser } from './generated/ChicoryParser';
 import { ChicoryParserVisitor } from './ChicoryVisitor';
+import { ChicoryTypeChecker } from './ChicoryTypeCheckerVisitor';
+import { LspDiagnostic } from './env';
 
 const getRange = (ctx: ParserRuleContext, tokenStream: TokenStream) => {
     const {start, stop} = ctx.getSourceInterval()
@@ -11,24 +13,6 @@ const getRange = (ctx: ParserRuleContext, tokenStream: TokenStream) => {
         start: { line: startToken.line - 1, character: startToken.column },
         end: { line: stopToken.line - 1, character: stopToken.column + (stopToken.text?.length || 1) }
     }
-}
-
-export type LspRange = {
-    start: {
-        line: number;
-        character: number;
-    };
-    end: {
-        line: number;
-        character: number;
-    };
-};
-
-export type LspDiagnostic = {
-    severity: number;
-    message: string;
-    range: LspRange;
-    source: string;
 }
 
 const compilerErrorToLspError = tokenStream => (e => ({
@@ -53,7 +37,11 @@ export default (source: string): CompileResult => {
     let parser = new ChicoryParser(tokenStream);
     let tree = parser.program();
     
-    const visitor = new ChicoryParserVisitor();
+    // Create type checker first
+    const typeChecker = new ChicoryTypeChecker();
+    
+    // Create visitor with the type checker
+    const visitor = new ChicoryParserVisitor(typeChecker);
     const {code, errors: unprocessedErrors} = visitor.getOutput(tree) || {code: "", errors: []}
 
     const mapErrors = compilerErrorToLspError(tokenStream)

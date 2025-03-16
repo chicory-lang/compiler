@@ -1,15 +1,18 @@
 import { ParserRuleContext } from 'antlr4ng';
 import * as parser from './generated/ChicoryParser';
-
-type SymbolEntry = { name: string; scopeLevel: number };
-type CompilationError = { message: string; context: ParserRuleContext };
+import { ChicoryTypeChecker } from './ChicoryTypeCheckerVisitor';
+import { CompilationError } from './env';
 
 export class ChicoryParserVisitor {
+    private typeChecker: ChicoryTypeChecker;
     private indentLevel: number = 0;
     private scopeLevel: number = 0;
     private uniqueVarCounter: number = 0;
     private errors: CompilationError[] = [];
-    private symbols: SymbolEntry[] = [];
+    
+    constructor(typeChecker?: ChicoryTypeChecker) {
+        this.typeChecker = typeChecker || new ChicoryTypeChecker();
+    }
 
     // Utility to generate consistent indentation
     private indent(): string {
@@ -32,16 +35,7 @@ export class ChicoryParserVisitor {
     }
 
     private exitScope(): void {
-        this.symbols = this.symbols.filter(s => s.scopeLevel < this.scopeLevel);
         this.scopeLevel--;
-    }
-
-    private declareSymbol(name: string): void {
-        this.symbols.push({ name, scopeLevel: this.scopeLevel });
-    }
-
-    private findSymbol(name: string): SymbolEntry | undefined {
-        return this.symbols.find(s => s.name === name && s.scopeLevel <= this.scopeLevel);
     }
 
     // Main entry point for compilation
@@ -71,7 +65,6 @@ export class ChicoryParserVisitor {
     visitAssignStmt(ctx: parser.AssignStmtContext): string {
         const assignKwd = ctx.assignKwd().getText(); // 'let' or 'const'
         const identifier = ctx.IDENTIFIER().getText();
-        this.declareSymbol(identifier); // Register variable in symbol table
         const expr = this.visitExpr(ctx.expr());
         return `${this.indent()}${assignKwd} ${identifier} = ${expr}`;
     }
@@ -82,13 +75,42 @@ export class ChicoryParserVisitor {
     }
 
     visitTypeDefinition(ctx: parser.TypeDefinitionContext): string {
-        const name = ctx.IDENTIFIER().getText();
-        return `${this.indent()}/* Type Erasure: ${name} */`; // Placeholder for type checking later
+        const typeName = ctx.IDENTIFIER().getText();
+        const typeExpr = ctx.typeExpr();
+        
+        // Check if this is an ADT definition
+        if (typeExpr.adtType()) {
+            // Get constructors from the type checker
+            const constructors = this.typeChecker.getConstructors().filter(c => 
+                c.adtName === typeName
+            );
+            
+            // Generate constructor functions for each ADT variant
+            const constructorFunctions = constructors.map(constructor => {
+                const constructorName = constructor.name;
+                
+                // Check if the constructor takes parameters
+                const constructorType = constructor.type;
+                if (constructorType.kind === 'function' && constructorType.params.length > 0) {
+                    return `${this.indent()}const ${constructorName} = (value) => { return { type: "${constructorName}", value }; };`;
+                } else {
+                    return `${this.indent()}const ${constructorName} = () => { return { type: "${constructorName}" }; };`;
+                }
+            }).join("\n");
+            
+            return constructorFunctions;
+        }
+        
+        // For function types and generic types, we just erase them
+        if (typeExpr.functionType() || typeExpr.genericTypeExpr()) {
+            return `${this.indent()}/* Type Erasure: ${typeName} */`;
+        }
+        
+        return `${this.indent()}/* Type Erasure: ${typeName} */`; // Placeholder for other types
     }
 
     visitImportStmt(ctx: parser.ImportStmtContext): string {
         const defaultImport = ctx.IDENTIFIER() ? ctx.IDENTIFIER()!.getText() : "";
-        this.declareSymbol(defaultImport);
         const destructuring = ctx.destructuringImportIdentifier()
             ? this.visitDestructuringImportIdentifier(ctx.destructuringImportIdentifier()!)
             : "";
@@ -99,7 +121,6 @@ export class ChicoryParserVisitor {
 
     visitDestructuringImportIdentifier(ctx: parser.DestructuringImportIdentifierContext): string {
         const identifiers = ctx.IDENTIFIER();
-        identifiers.forEach(id => this.declareSymbol(id.getText()));
         return identifiers.length > 0
             ? `{ ${identifiers.map(id => id.getText()).join(", ")} }`
             : "";
@@ -187,11 +208,13 @@ export class ChicoryParserVisitor {
     }
 
     visitFuncExpr(ctx: parser.FuncExprContext): string {
+        this.enterScope();
         const params = ctx.parameterList() ? this.visitParameterList(ctx.parameterList()!) : "";
         const childExpr = ctx.expr().getChild(0);
         const body = childExpr instanceof parser.BlockExpressionContext
             ? this.visitBlockExpr(childExpr.blockExpr())
             : this.visitExpr(ctx.expr());
+        this.exitScope();
         return `(${params}) => ${body}`;
     }
 
@@ -246,7 +269,6 @@ export class ChicoryParserVisitor {
             return { pattern: `${varName}.type === "${adtName}"` };
         } else if (ctx.ruleContext instanceof parser.AdtWithParamMatchPatternContext) {
             const [adtName, paramName] = (ctx as parser.AdtWithParamMatchPatternContext).IDENTIFIER().map(id => id.getText());
-            this.declareSymbol(paramName); // Register pattern variable
             return {
                 pattern: `${varName}.type === "${adtName}"`,
                 inject: `const ${paramName} = ${varName}.value;`
@@ -352,11 +374,7 @@ export class ChicoryParserVisitor {
     }
 
     visitIdentifier(ctx: ParserRuleContext): string {
-        const name = ctx.getText();
-        if (!this.findSymbol(name)) {
-            this.reportError(`Undefined variable: ${name}`, ctx);
-        }
-        return name;
+        return ctx.getText();
     }
 
     visitLiteral(ctx: parser.LiteralContext): string {
@@ -366,10 +384,18 @@ export class ChicoryParserVisitor {
     // Public method to get compilation output and errors
     getOutput(ctx: parser.ProgramContext): { code: string; errors: CompilationError[] } {
         this.errors = []; // Reset errors per compilation
-        this.symbols = []; // Reset symbols per compilation
         this.uniqueVarCounter = 0; // Reset variable counter
         this.scopeLevel = 0; // Reset scope level
+        
+        // Run type checker first
+        const {errors} = this.typeChecker.check(ctx);
+        
+        const typeErrors = errors.map(err => ({
+            message: `Type error: ${err.message}`,
+            context: err.context
+        }));
+
         const code = this.visitProgram(ctx);
-        return { code, errors: this.errors };
+        return { code, errors: [...this.errors, ...typeErrors] };
     }
 }
