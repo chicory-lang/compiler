@@ -344,11 +344,19 @@ export class ChicoryTypeChecker {
                 } as any;
             }
             
-            // If it's not a defined type and not a type parameter, it's an error
-            // (unless we're in a function type, where it might be a generic parameter)
-            if (!ctx.parent?.parent?.parent instanceof parser.FunctionTypeContext) {
-                this.errors.push({ message: `Undefined type: ${text}`, context: ctx });
+            // Check if it's a type parameter from the function context
+            const functionTypeCtx = this.findParentOfType(ctx, parser.FunctionTypeContext);
+            if (functionTypeCtx) {
+                // We're inside a function type, so this might be a type parameter
+                return { 
+                    kind: 'primitive', 
+                    name: 'typeParam',
+                    typeParam: text
+                } as any;
             }
+            
+            // If it's not a defined type and not a type parameter, it's an error
+            this.errors.push({ message: `Undefined type: ${text}`, context: ctx });
         }
         
         if (ctx.adtType()) {
@@ -372,23 +380,49 @@ export class ChicoryTypeChecker {
         const paramTypes: Type[] = [];
         const typeParamsList = Array.from(typeParamScope.keys());
         
-        // Collect implicit type parameters from the function signature
-        const implicitTypeParams = new Set<string>();
+        // Collect all identifiers in the function signature as potential type parameters
+        const functionTypeParams = new Set<string>(typeParamsList);
         
-        // Process parameters if they exist
+        // First pass: collect all potential type parameters from the function signature
+        if (ctx.typeParam()) {
+            ctx.typeParam().forEach(param => {
+                if (param instanceof parser.UnnamedTypeParamContext) {
+                    const typeText = param.typeExpr().getText();
+                    // If it's an identifier and not a defined type, it's likely a type parameter
+                    if (param.typeExpr().getChildCount() === 1 && 
+                        param.typeExpr().getChild(0) instanceof TerminalNode &&
+                        !this.typeDefs.get(typeText)) {
+                        functionTypeParams.add(typeText);
+                    }
+                }
+            });
+        }
+        
+        // Also check the return type
+        const returnTypeText = ctx.typeExpr().getText();
+        if (ctx.typeExpr().getChildCount() === 1 && 
+            ctx.typeExpr().getChild(0) instanceof TerminalNode &&
+            !this.typeDefs.get(returnTypeText)) {
+            functionTypeParams.add(returnTypeText);
+        }
+        
+        // Second pass: process parameters with the complete set of type parameters
         if (ctx.typeParam()) {
             ctx.typeParam().forEach(param => {
                 if (param instanceof parser.NamedTypeParamContext) {
                     // Named parameter (with type annotation)
-                    const paramType = this.typeDefToType(this.visitTypeExpr(param.typeExpr(), undefined, typeParamsList), '');
+                    const paramType = this.typeDefToType(
+                        this.visitTypeExpr(param.typeExpr(), undefined, Array.from(functionTypeParams)), 
+                        ''
+                    );
                     paramTypes.push(paramType);
                 } else if (param instanceof parser.UnnamedTypeParamContext) {
                     // Unnamed parameter (just a type)
                     const typeExpr = param.typeExpr();
                     const typeText = typeExpr.getText();
                     
-                    // Direct check for type parameter
-                    if (typeParamsList.includes(typeText)) {
+                    // Check if it's a type parameter
+                    if (functionTypeParams.has(typeText)) {
                         paramTypes.push({ kind: 'typeParam', name: typeText });
                     } else {
                         // Check if it's a defined type
@@ -397,13 +431,12 @@ export class ChicoryTypeChecker {
                             // It's a user-defined type
                             const paramType = this.typeDefToType(typeDefEntry.def, typeText);
                             paramTypes.push(paramType);
-                        } else if (typeText.length === 1 && /[A-Z]/.test(typeText)) {
-                            // If it's a single uppercase letter and not defined, treat as implicit type parameter
-                            implicitTypeParams.add(typeText);
-                            paramTypes.push({ kind: 'typeParam', name: typeText });
                         } else {
                             // Otherwise process it normally
-                            const paramType = this.typeDefToType(this.visitTypeExpr(typeExpr, undefined, typeParamsList), '');
+                            const paramType = this.typeDefToType(
+                                this.visitTypeExpr(typeExpr, undefined, Array.from(functionTypeParams)), 
+                                ''
+                            );
                             paramTypes.push(paramType);
                         }
                     }
@@ -411,12 +444,11 @@ export class ChicoryTypeChecker {
             });
         }
         
-        // Process return type - handle direct type parameter references
+        // Process return type with the complete set of type parameters
         const returnTypeExpr = ctx.typeExpr();
-        const returnTypeText = returnTypeExpr.getText();
         
-        // Direct check for type parameter in return position
-        if (typeParamsList.includes(returnTypeText)) {
+        // Check if return type is a type parameter
+        if (functionTypeParams.has(returnTypeText)) {
             return { 
                 kind: 'function', 
                 params: paramTypes, 
@@ -435,21 +467,8 @@ export class ChicoryTypeChecker {
             };
         }
         
-        // Check if return type is an implicit type parameter
-        if (implicitTypeParams.has(returnTypeText) || 
-            (returnTypeText.length === 1 && /[A-Z]/.test(returnTypeText))) {
-            // If it's a single uppercase letter and not defined, treat as implicit type parameter
-            implicitTypeParams.add(returnTypeText);
-            return { 
-                kind: 'function', 
-                params: paramTypes, 
-                return: { kind: 'typeParam', name: returnTypeText }
-            };
-        }
-        
-        // For more complex return types, we need to pass the type parameter scope
-        const combinedTypeParams = [...typeParamsList, ...Array.from(implicitTypeParams)];
-        const returnTypeDef = this.visitTypeExpr(returnTypeExpr, undefined, combinedTypeParams);
+        // For more complex return types
+        const returnTypeDef = this.visitTypeExpr(returnTypeExpr, undefined, Array.from(functionTypeParams));
         const returnType = this.typeDefToType(returnTypeDef, '');
         
         return { 
@@ -642,9 +661,27 @@ export class ChicoryTypeChecker {
         return { kind: 'primitive', name };
     }
 
+    private findParentOfType<T extends ParserRuleContext>(ctx: ParserRuleContext, type: any): T | null {
+        let current = ctx.parent;
+        while (current) {
+            if (current instanceof type) {
+                return current as T;
+            }
+            current = current.parent;
+        }
+        return null;
+    }
+
     private lookupType(typeName: string, context: ParserRuleContext): Type {
         // Check if it's a single uppercase letter (potential type parameter)
         if (typeName.length === 1 && /[A-Z]/.test(typeName)) {
+            return { kind: 'typeParam', name: typeName };
+        }
+        
+        // Check if we're in a function type context
+        const functionTypeCtx = this.findParentOfType(context, parser.FunctionTypeContext);
+        if (functionTypeCtx) {
+            // We're inside a function type, so this might be a type parameter
             return { kind: 'typeParam', name: typeName };
         }
         
