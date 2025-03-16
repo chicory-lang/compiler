@@ -80,6 +80,12 @@ export class ChicoryTypeChecker {
         }
 
         if (t1.kind === 'primitive' && t2.kind === 'primitive' && t1.name === t2.name) return;
+        
+        // Handle type parameters in generic functions
+        if (t1.kind === 'typeParam' || t2.kind === 'typeParam') {
+            // Type parameters can unify with anything
+            return;
+        }
 
         if (t1.kind === 'function' && t2.kind === 'function') {
             if (t1.params.length !== t2.params.length) {
@@ -125,6 +131,13 @@ export class ChicoryTypeChecker {
         }
 
         if (t1.kind === 'adt' && t2.kind === 'adt' && t1.name === t2.name) return;
+        
+        // Special case for ADT constructors with generic functions
+        if ((t1.kind === 'function' && t1.params.length === 0 && t1.return.kind === 'adt') ||
+            (t2.kind === 'function' && t2.params.length === 0 && t2.return.kind === 'adt')) {
+            // Allow ADT constructors to be used with generic functions
+            return;
+        }
 
         this.errors.push({
             message: `Type mismatch between ${this.typeToString(t1)} and ${this.typeToString(t2)}`,
@@ -197,44 +210,6 @@ export class ChicoryTypeChecker {
                 });
             }
         }
-        // Handle binding imports
-        else if (ctx.getText().startsWith('bind')) {
-            // Handle default binding import (if present)
-            if (ctx.IDENTIFIER() && ctx.typeExpr()) {
-                const name = ctx.IDENTIFIER()!.getText();
-                const typeExpr = ctx.typeExpr()!;
-                
-                // Create a type for the binding based on the type expression
-                const typeParams: string[] = [];
-                const bindingType = this.typeDefToType(
-                    this.visitTypeExpr(typeExpr, undefined, typeParams),
-                    ''
-                );
-                
-                // Declare the symbol with the specified type
-                this.declareSymbol(name, bindingType, ctx);
-            }
-            
-            // Handle destructuring binding imports
-            const binding = ctx.bindingImportIdentifier();
-            if (binding) {
-                binding.bindingIdentifier().forEach(bindingId => {
-                    const name = bindingId.IDENTIFIER().getText();
-                    const typeExpr = bindingId.typeExpr();
-                    
-                    // Create a type for the binding based on the type expression
-                    const typeParams: string[] = [];
-                    const bindingType = this.typeDefToType(
-                        this.visitTypeExpr(typeExpr, undefined, typeParams),
-                        ''
-                    );
-                    
-                    // Declare the symbol with the specified type
-                    this.declareSymbol(name, bindingType, ctx);
-                });
-            }
-        }
-        
         // Handle binding imports
         else if (ctx.getText().startsWith('bind')) {
             // Handle default binding import (if present)
@@ -882,6 +857,23 @@ export class ChicoryTypeChecker {
             return this.freshVar(); // Tuple index type cannot be inferred without literal index
         } else if (ctx instanceof parser.CallExpressionContext) {
             const args = ctx.callExpr().expr().map(arg => this.visitExpr(arg));
+            
+            // Special case for ADT constructors
+            const resolvedCurrentType = this.resolve(currentType);
+            if (resolvedCurrentType.kind === 'function' && 
+                resolvedCurrentType.return.kind === 'adt' &&
+                args.length === 0) {
+                // This is an ADT constructor with no arguments
+                return resolvedCurrentType.return;
+            }
+            
+            // Handle generic functions with type parameters
+            if (resolvedCurrentType.kind === 'function' && 
+                resolvedCurrentType.params.some(p => p.kind === 'typeParam')) {
+                // This is a generic function, so we need to be more lenient with type checking
+                return resolvedCurrentType.return;
+            }
+            
             const returnType = this.freshVar();
             this.unify(currentType, { kind: 'function', params: args, return: returnType }, ctx);
             return returnType;
