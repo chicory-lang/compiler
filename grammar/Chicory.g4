@@ -48,9 +48,7 @@ recordType: '{' NL* recordTypeAnontation (',' NL* recordTypeAnontation)* ','? NL
 
 recordTypeAnontation: IDENTIFIER ':' (primitiveType | recordType | IDENTIFIER);
 
-tupleType: '[' NL* tupleField (',' NL* tupleField)* ','? NL* ']';
-
-tupleField: typeExpr;
+tupleType: '[' NL* typeExpr (',' NL* typeExpr)* ','? NL* ']';
 
 primitiveType: 'number' | 'string' | 'boolean' | 'unit';
 

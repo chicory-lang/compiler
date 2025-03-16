@@ -724,22 +724,22 @@ export class ChicoryTypeChecker {
     }
 
     private visitTupleType(ctx: parser.TupleTypeContext, typeParamScope: Map<string, Type> = new Map()): TypeDef {
-        const elements = ctx.tupleField().map(field => this.visitTupleField(field, typeParamScope));
-        return { kind: 'tuple', elements };
-    }
-
-    private visitTupleField(ctx: parser.TupleFieldContext, typeParamScope: Map<string, Type> = new Map()): Type {
-        if (ctx.primitiveType()) return this.visitPrimitiveType(ctx.primitiveType()!) as Type;
-        if (ctx.IDENTIFIER()) {
-            const typeName = ctx.IDENTIFIER()!.getText();
-            // Check if it's a type parameter
-            if (typeParamScope.has(typeName)) {
-                return typeParamScope.get(typeName)!;
+        const elements: Type[] = [];
+        
+        // Process each type expression in the tuple
+        for (const typeExpr of ctx.typeExpr()) {
+            const typeText = typeExpr.getText();
+            
+            // Check if it's a direct reference to a type parameter
+            if (typeText && typeParamScope.has(typeText)) {
+                elements.push(typeParamScope.get(typeText)!);
+            } else {
+                const typeDef = this.visitTypeExpr(typeExpr, undefined, Array.from(typeParamScope.keys()));
+                elements.push(this.typeDefToType(typeDef, ''));
             }
-            return this.lookupType(typeName, ctx);
         }
-        this.errors.push({ message: 'Invalid tuple field', context: ctx });
-        return this.freshVar();
+        
+        return { kind: 'tuple', elements };
     }
 
     private visitPrimitiveType(ctx: parser.PrimitiveTypeContext): TypeDef {
