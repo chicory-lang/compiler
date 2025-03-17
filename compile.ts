@@ -25,11 +25,12 @@ const compilerErrorToLspError = (tokenStream: TokenStream) => ((e: CompilationEr
 export type CompileResult = {
     code: string;
     errors: LspDiagnostic[];
+    hints: TypeHint[];
 }
 
 export default (source: string): CompileResult => {
     if (!source.trim()) {
-        return { code: "", errors: [] }
+        return { code: "", errors: [], hints: [] }
     }
     let inputStream = CharStream.fromString(source);
     let lexer = new ChicoryLexer(inputStream);
@@ -42,13 +43,20 @@ export default (source: string): CompileResult => {
     
     // Create visitor with the type checker
     const visitor = new ChicoryParserVisitor(typeChecker);
-    const {code, errors: unprocessedErrors} = visitor.getOutput(tree) || {code: "", errors: []}
+    const {code, errors: unprocessedErrors, hints: unprocessedHints} = visitor.getOutput(tree) || {code: "", errors: [], hints: []}
 
     const mapErrors = compilerErrorToLspError(tokenStream)
     const errors = unprocessedErrors.map(mapErrors)
+    
+    // Convert hints to LSP format
+    const hints = unprocessedHints.map(hint => ({
+        range: getRange(hint.context, tokenStream),
+        type: hint.type
+    }));
 
     return {
         code,
-        errors
+        errors,
+        hints
     }
 }

@@ -19,3 +19,8 @@ type LspDiagnostic = {
     range: LspRange;
     source: string;
 }
+
+type TypeHint = {
+    range: LspRange;
+    type: string;
+}

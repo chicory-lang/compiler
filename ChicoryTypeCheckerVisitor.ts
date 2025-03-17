@@ -45,6 +45,7 @@ export class ChicoryTypeChecker {
     private substitution: Map<number, Type> = new Map();
     private errors: CompilationError[] = [];
     private symbols: SymbolInfo[] = [];
+    private typeHints: { context: ParserRuleContext, type: string }[] = [];
     private freshVarCounter = 0;
     
     // Public method to get all ADT constructors
@@ -157,15 +158,28 @@ export class ChicoryTypeChecker {
                 return `{ ${fields.join(', ')} }`;
             }
             case 'adt': return type.name;
+            case 'typeParam': return type.name;
+            case 'generic': return `${this.typeToString(type.base)}<${type.typeArgs.map(t => this.typeToString(t)).join(', ')}>`;
+            case 'external': return `external from ${type.module}`;
             default: return 'unknown';
         }
     }
+    
+    // Add a type hint for a given expression
+    private addTypeHint(ctx: ParserRuleContext, type: Type): void {
+        const typeStr = this.typeToString(type);
+        this.typeHints.push({
+            context: ctx,
+            type: typeStr
+        });
+    }
 
-    check(ctx: parser.ProgramContext): { errors: CompilationError[]; symbols: SymbolInfo[] } {
+    check(ctx: parser.ProgramContext): { errors: CompilationError[]; symbols: SymbolInfo[]; hints: { context: ParserRuleContext, type: string }[] } {
         this.errors = [];
         this.symbols = [];
+        this.typeHints = [];
         this.visitProgram(ctx);
-        return { errors: this.errors, symbols: this.symbols };
+        return { errors: this.errors, symbols: this.symbols, hints: this.typeHints };
     }
 
     private visitProgram(ctx: parser.ProgramContext): void {
@@ -814,6 +828,10 @@ export class ChicoryTypeChecker {
         ctx.tailExpr().forEach(tail => {
             currentType = this.visitTailExpr(tail, currentType);
         });
+        
+        // Add type hint for the entire expression
+        this.addTypeHint(ctx, currentType);
+        
         return currentType;
     }
 
@@ -1010,7 +1028,13 @@ export class ChicoryTypeChecker {
         });
         const bodyType = this.visitExpr(ctx.expr());
         this.exitScope();
-        return { kind: 'function', params: paramTypes, return: bodyType };
+        
+        const funcType = { kind: 'function', params: paramTypes, return: bodyType } as Type;
+        
+        // Add type hint for the function expression
+        this.addTypeHint(ctx, funcType);
+        
+        return funcType;
     }
 
     private visitMatchExpr(ctx: parser.MatchExprContext): Type {
@@ -1135,6 +1159,10 @@ export class ChicoryTypeChecker {
             this.errors.push({ message: `Undefined variable: ${name}`, context: ctx });
             return this.freshVar();
         }
+        
+        // Add type hint for the identifier
+        this.addTypeHint(ctx, entry.type);
+        
         return entry.type;
     }
 
@@ -1151,16 +1179,23 @@ export class ChicoryTypeChecker {
     }
 
     private visitLiteral(ctx: parser.LiteralContext): Type {
+        let type: Type;
+        
         if (ctx instanceof parser.StringLiteralContext) {
-            return { kind: 'primitive', name: 'string' };
+            type = { kind: 'primitive', name: 'string' };
         } else if (ctx instanceof parser.NumberLiteralContext) {
-            return { kind: 'primitive', name: 'number' };
+            type = { kind: 'primitive', name: 'number' };
         } else if (ctx instanceof parser.BooleanLiteralContext) {
-            return { kind: 'primitive', name: 'boolean' };
+            type = { kind: 'primitive', name: 'boolean' };
         } else {
             this.errors.push({ message: `Unknown literal type: ${ctx.getText()}`, context: ctx });
-            return this.freshVar();
+            type = this.freshVar();
         }
+        
+        // Add type hint for the literal
+        this.addTypeHint(ctx, type);
+        
+        return type;
     }
 
     // List of standard HTML elements that should be allowed without definition

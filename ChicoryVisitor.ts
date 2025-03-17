@@ -9,6 +9,7 @@ export class ChicoryParserVisitor {
     private scopeLevel: number = 0;
     private uniqueVarCounter: number = 0;
     private errors: CompilationError[] = [];
+    private hints: { context: ParserRuleContext, type: string }[] = [];
     
     constructor(typeChecker?: ChicoryTypeChecker) {
         this.typeChecker = typeChecker || new ChicoryTypeChecker();
@@ -408,20 +409,24 @@ export class ChicoryParserVisitor {
     }
 
     // Public method to get compilation output and errors
-    getOutput(ctx: parser.ProgramContext): { code: string; errors: CompilationError[] } {
+    getOutput(ctx: parser.ProgramContext): { code: string; errors: CompilationError[]; hints: { context: ParserRuleContext, type: string }[] } {
         this.errors = []; // Reset errors per compilation
+        this.hints = []; // Reset hints per compilation
         this.uniqueVarCounter = 0; // Reset variable counter
         this.scopeLevel = 0; // Reset scope level
         
         // Run type checker first
-        const {errors} = this.typeChecker.check(ctx);
+        const {errors, hints} = this.typeChecker.check(ctx);
         
         const typeErrors = errors.map(err => ({
             message: `Type error: ${err.message}`,
             context: err.context
         }));
+        
+        // Collect type hints
+        this.hints = hints;
 
         const code = this.visitProgram(ctx);
-        return { code, errors: [...this.errors, ...typeErrors] };
+        return { code, errors: [...this.errors, ...typeErrors], hints: this.hints };
     }
 }
