@@ -402,7 +402,19 @@ export class ChicoryParserVisitor {
     }
 
     visitIdentifier(ctx: ParserRuleContext): string {
-        return ctx.getText();
+        const name = ctx.getText();
+        
+        // Check if this is a no-argument ADT constructor
+        const constructor = this.typeChecker.getConstructors().find(c => c.name === name);
+        if (constructor) {
+            const constructorType = constructor.type;
+            if (constructorType.kind === 'function' && constructorType.params.length === 0) {
+                // For no-argument constructors, return the object directly
+                return `{ type: "${name}" }`;
+            }
+        }
+        
+        return name;
     }
 
     visitLiteral(ctx: parser.LiteralContext): string {
