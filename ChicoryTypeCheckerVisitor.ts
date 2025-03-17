@@ -1163,6 +1163,16 @@ export class ChicoryTypeChecker {
         // Add type hint for the identifier
         this.addTypeHint(ctx, entry.type);
         
+        // Special case for no-argument ADT constructors
+        const constructor = this.constructorMap.get(name);
+        if (constructor) {
+            const constructorType = this.resolve(constructor.type);
+            if (constructorType.kind === 'function' && constructorType.params.length === 0) {
+                // For no-argument constructors, return the ADT type directly
+                return constructorType.return;
+            }
+        }
+        
         return entry.type;
     }
 

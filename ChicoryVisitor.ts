@@ -95,7 +95,8 @@ export class ChicoryParserVisitor {
                 if (constructorType.kind === 'function' && constructorType.params.length > 0) {
                     return `${this.indent()}const ${constructorName} = (value) => { return { type: "${constructorName}", value }; };`;
                 } else {
-                    return `${this.indent()}const ${constructorName} = () => { return { type: "${constructorName}" }; };`;
+                    // For no-argument constructors, create the object directly
+                    return `${this.indent()}const ${constructorName} = { type: "${constructorName}" };`;
                 }
             }).join("\n");
             
