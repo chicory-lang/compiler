@@ -74,6 +74,13 @@ const result = compile(code);
 console.log(result);
 ```
 
+`result` will be an object with the following properties:
+
+- `code`: The compiled JSX code
+- `errors`: An array of errors that occurred during compilation
+- `hints`: An array of type hints generated during compilation
+
+
 ### Development
 
 The compiler currently runs in TS and is being developed with the Bun JS runtime (because it's fast, supports TS, and has built in testing). If you would like to contribute towards compiler, development, you will need to set up Bun first.
