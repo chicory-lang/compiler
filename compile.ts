@@ -86,20 +86,31 @@ export default (source: string): CompileResult => {
     
     // Create visitor with the type checker
     const visitor = new ChicoryParserVisitor(typeChecker);
-    const {code, errors: unprocessedErrors, hints: unprocessedHints} = visitor.getOutput(tree) || {code: "", errors: [], hints: []}
 
-    const mapErrors = compilerErrorToLspError(tokenStream)
+    let code: string = ""
+    let errors: LspDiagnostic[] = []
+    let hints: TypeHint[] = []
+    try {
+        const {code: compiledCode, errors: unprocessedErrors, hints: unprocessedHints} = visitor.getOutput(tree) || {code: "", errors: [], hints: []}
+        const mapErrors = compilerErrorToLspError(tokenStream)
+
+        code = compiledCode
+        errors.push(...unprocessedErrors.map(mapErrors))
+        hints = unprocessedHints.map(({context, type}) => ({
+            range: getRange(context, tokenStream),
+            type
+        }));
+    }
+    catch (e) {
+        // We ensure that the compiler does not crash if the parser fails to produce a parseable parse tree
+    }
+
     const syntaxErrors = errorListener.getErrors();
-    const errors = filterOutErrorsThatContainOtherErrors([
-        ...unprocessedErrors.map(mapErrors), 
-        ...syntaxErrors.map(syntaxErrorToLspError)
-    ])
+    errors.push(...syntaxErrors.map(syntaxErrorToLspError))
+
+    errors = filterOutErrorsThatContainOtherErrors(errors)
     
     // Convert hints to LSP format
-    const hints = unprocessedHints.map(({context, type}) => ({
-        range: getRange(context, tokenStream),
-        type
-    }));
 
     return {
         code,
