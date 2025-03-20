@@ -371,17 +371,27 @@ export class ChicoryTypeChecker {
   private visitRecordType(ctx: parser.RecordTypeContext): ChicoryType {
     const recordType = new RecordType(new Map());
     ctx.recordTypeAnontation().forEach((kv) => {
+      const id = kv.IDENTIFIER()[0].getText();
+
       let val: ChicoryType;
       if (kv.primitiveType()) {
         val = this.getPrimitiveType(kv.primitiveType()!);
       } else if (kv.recordType()) {
         val = this.visitRecordType(kv.recordType()!);
-      } else {
+      } else if (kv.tupleType()) {
+        val = this.visitTupleType(kv.tupleType()!);
+      } else if (kv.functionType()) {
+        val = this.visitFunctionType(kv.functionType()!);
+      } else if (kv.IDENTIFIER()) {
+        const rhs = kv.IDENTIFIER()[1].getText();
+      
         val =
-          this.environment.getType(kv.IDENTIFIER()[1].getText()) || UnknownType;
+          this.environment.getType(rhs) || new GenericType(rhs, [])
+      } else {
+        throw new Error(`Unknown record type annotation: ${kv.getText()}`);
       }
 
-      recordType.fields.set(kv.IDENTIFIER()[0].getText(), val);
+      recordType.fields.set(id, val);
     });
     return recordType;
   }

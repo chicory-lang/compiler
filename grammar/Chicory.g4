@@ -46,7 +46,7 @@ adtTypeAnnotation: IDENTIFIER ':' (primitiveType | IDENTIFIER);
 
 recordType: '{' NL* recordTypeAnontation (',' NL* recordTypeAnontation)* ','? NL* '}';
 
-recordTypeAnontation: IDENTIFIER ':' (primitiveType | recordType | IDENTIFIER);
+recordTypeAnontation: IDENTIFIER ':' (primitiveType | recordType | IDENTIFIER | tupleType | functionType);
 
 tupleType: '[' NL* typeExpr (',' NL* typeExpr)* ','? NL* ']';
 
