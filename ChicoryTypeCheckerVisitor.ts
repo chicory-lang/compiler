@@ -286,13 +286,59 @@ export class ChicoryTypeChecker {
 
   visitTypeDefinition(ctx: parser.TypeDefinitionContext): ChicoryType {
     const typeName = ctx.IDENTIFIER().getText();
-    const type = this.visitTypeExpr(ctx.typeExpr(), typeName);
-
-    // Not doing full handling right now.
-    this.environment.declare(typeName, type, ctx, (str) =>
+    if (typeName[0].toUpperCase() !== typeName[0]) {
+      this.reportError(
+        `User defined types should begin with a capital letter: ${typeName}`,
+        ctx
+      );
+    }
+    
+    // Create a new scope for type parameters
+    this.environment = this.environment.pushScope();
+    
+    // Handle type parameters if present
+    const typeParams: TypeVariable[] = [];
+    if (ctx.typeParams()) {
+      ctx.typeParams()!.IDENTIFIER().forEach(param => {
+        const paramName = param.getText();
+        const typeVar = new TypeVariable(paramName);
+        
+        // Add type parameter to environment
+        this.environment.declare(paramName, typeVar, ctx, (str) =>
+          this.reportError(str, ctx)
+        );
+        
+        typeParams.push(typeVar);
+      });
+    }
+    
+    // Visit the type expression in the context of the type parameters
+    const baseType = this.visitTypeExpr(ctx.typeExpr(), typeName);
+    
+    // Create the final type
+    let finalType: ChicoryType;
+    if (typeParams.length > 0) {
+      // If we have type parameters, create a generic type
+      finalType = new GenericType(typeName, typeParams);
+      
+      // Store the constructors with the generic type
+      // This is important for later when we need to instantiate the type
+      const adtConstructors = this.constructors.filter(c => c.adtName === typeName);
+      (finalType as any).constructors = adtConstructors;
+    } else {
+      // Otherwise, use the base type
+      finalType = baseType;
+    }
+    
+    // Pop the type parameter scope
+    this.environment = this.environment.popScope();
+    
+    // Declare the type in the outer scope
+    this.environment.declare(typeName, finalType, ctx, (str) =>
       this.reportError(str, ctx)
     );
-    return type;
+    
+    return finalType;
   }
 
   private visitTypeExpr(
@@ -416,10 +462,17 @@ export class ChicoryTypeChecker {
         const recordType = new RecordType(new Map());
         option.adtTypeAnnotation().forEach((annotation) => {
           const fieldName = annotation.IDENTIFIER()[0].getText();
-          const fieldType = annotation.primitiveType()
-            ? this.getPrimitiveType(annotation.primitiveType()!)
-            : this.environment.getType(annotation.IDENTIFIER()[1].getText()) ||
-              UnknownType; // Handle type references
+          let fieldType: ChicoryType;
+          
+          if (annotation.primitiveType()) {
+            fieldType = this.getPrimitiveType(annotation.primitiveType()!);
+          } else {
+            // Check if it's a type parameter
+            const typeName = annotation.IDENTIFIER()[1].getText();
+            fieldType = this.environment.getType(typeName) || 
+                       new GenericType(typeName, []); // Assume it's a generic if not found
+          }
+          
           recordType.fields.set(fieldName, fieldType);
         });
 
@@ -431,15 +484,23 @@ export class ChicoryTypeChecker {
         );
       } else if (option instanceof parser.AdtOptionNamedTypeContext) {
         constructorName = option.IDENTIFIER()[0].getText();
-
-        const paramType =
-          this.environment.getType(option.IDENTIFIER()[1].getText()) ||
-          UnknownType; // Get the named type
-        constructorType = new FunctionType(
-          [paramType],
-          adtType,
-          constructorName
-        );
+        
+        // Get the parameter type name
+        const paramTypeName = option.IDENTIFIER()[1].getText();
+        
+        // Check if it's a type parameter
+        const paramType = this.environment.getType(paramTypeName);
+        if (paramType) {
+          constructorType = new FunctionType([paramType], adtType, constructorName);
+        } else {
+          // If not found, it might be a reference to another type
+          // For now, create a generic reference
+          constructorType = new FunctionType(
+            [new GenericType(paramTypeName, [])], 
+            adtType, 
+            constructorName
+          );
+        }
       } else if (option instanceof parser.AdtOptionPrimitiveTypeContext) {
         constructorName = option.IDENTIFIER().getText();
 
@@ -812,6 +873,14 @@ export class ChicoryTypeChecker {
     if (type) {
       // Apply any substitutions to the type
       const substitutedType = this.applySubstitution(type, this.currentSubstitution);
+      
+      // If it's a generic type, instantiate it with fresh type variables
+      if (substitutedType instanceof GenericType) {
+        const instantiatedType = this.instantiateGenericType(substitutedType);
+        this.hints.push({ context: ctx, type: instantiatedType.toString() });
+        return instantiatedType;
+      }
+      
       this.hints.push({ context: ctx, type: substitutedType.toString() });
       return substitutedType;
     }
@@ -824,6 +893,23 @@ export class ChicoryTypeChecker {
       // Apply any substitutions to the constructor type
       const substitutedType = this.applySubstitution(constructor.type, this.currentSubstitution);
       this.hints.push({ context: ctx, type: substitutedType.toString() });
+      
+      // Check if this constructor belongs to a generic type
+      const adtType = this.environment.getType(constructor.adtName);
+      if (adtType instanceof GenericType) {
+        // This is a constructor for a generic type
+        // Instantiate the generic type with fresh type variables
+        this.instantiateGenericType(adtType);
+        
+        // Get the freshly instantiated constructor
+        const freshConstructor = this.constructors.find(
+          c => c.name === identifierName && c !== constructor
+        );
+        
+        if (freshConstructor) {
+          return freshConstructor.type;
+        }
+      }
       
       // Special case for no-argument constructors
       if (substitutedType instanceof FunctionType && substitutedType.paramTypes.length === 0) {
@@ -1018,15 +1104,76 @@ export class ChicoryTypeChecker {
     if (functionType instanceof FunctionType) {
       expectedParamTypes = functionType.paramTypes;
       returnType = functionType.returnType;
+      
+      // Check if this is a constructor call for a generic type
+      if (functionType.constructorName) {
+        const constructor = this.constructors.find(c => c.name === functionType.constructorName);
+        if (constructor) {
+          const adtType = this.environment.getType(constructor.adtName);
+          if (adtType instanceof GenericType) {
+            // Create a local substitution map for this constructor call
+            const localSubstitution = new Map<string, ChicoryType>();
+            
+            // Unify the parameter types with the argument types to infer type variables
+            for (let i = 0; i < argumentTypes.length; i++) {
+              const paramType = expectedParamTypes[i];
+              const argType = argumentTypes[i];
+              
+              const result = this.unify(paramType, argType, localSubstitution);
+              if (result instanceof Error) {
+                this.reportError(
+                  `Argument ${i + 1} type mismatch: ${result.message}`,
+                  ctx
+                );
+              }
+            }
+            
+            // Apply the local substitution to the return type
+            returnType = this.applySubstitution(returnType, localSubstitution);
+            
+            // If the return type is an AdtType, convert it to a GenericType with inferred arguments
+            if (returnType instanceof AdtType && returnType.name === adtType.name) {
+              // Extract the inferred type arguments
+              const typeArgs = adtType.typeArguments.map(typeVar => {
+                if (typeVar instanceof TypeVariable) {
+                  return localSubstitution.get(typeVar.name) || typeVar;
+                }
+                return typeVar;
+              });
+              
+              // Create a new GenericType with the inferred type arguments
+              const inferredGenericType = new GenericType(adtType.name, typeArgs);
+              
+              // Add debug logging
+              console.log(`[visitCallExpr] Inferred generic type: ${inferredGenericType}`);
+              console.log(`[visitCallExpr] Type arguments: ${typeArgs.map(t => t.toString()).join(', ')}`);
+              
+              // For constructor calls, we need to ensure the type arguments are properly tracked
+              if (argumentTypes.length > 0) {
+                // If we have arguments, use their types as the type arguments
+                // This is a simplification, but works for simple cases like Some(string)
+                const directTypeArg = argumentTypes[0];
+                inferredGenericType.typeArguments = [directTypeArg];
+                
+                console.log(`[visitCallExpr] Direct type argument: ${directTypeArg}`);
+              }
+              
+              return inferredGenericType;
+            }
+            
+            return returnType;
+          }
+        }
+      }
     } else if (functionType instanceof GenericType) {
-      // 1. Lookup the generic type def (e..g, from a bind stmt). For now let's assume a simple case.
-      //  Ideally, we'd have a way to store and retrieve bound types from import stmts.
-      // Maybe we have a function `getBoundType` that does this
-      // const boundType = this.getBoudType(functionType.name);
+      // Handle generic function types
       throw new Error("Not implemented generic type call expressions yet...");
     }
 
-    // unify argument types with parameter types
+    // Create a local substitution map for this function call
+    const localSubstitution = new Map<string, ChicoryType>();
+
+    // Unify argument types with parameter types
     if (argumentTypes.length !== expectedParamTypes.length) {
       this.reportError(
         `Expected ${expectedParamTypes.length} arguments, but got ${argumentTypes.length}`,
@@ -1037,7 +1184,7 @@ export class ChicoryTypeChecker {
         const result = this.unify(
           expectedParamTypes[i],
           argumentTypes[i],
-          this.currentSubstitution
+          localSubstitution
         );
         if (result instanceof Error) {
           this.reportError(
@@ -1048,7 +1195,17 @@ export class ChicoryTypeChecker {
       }
     }
 
-    returnType = this.applySubstitution(returnType, this.currentSubstitution);
+    // Apply the local substitution to the return type
+    returnType = this.applySubstitution(returnType, localSubstitution);
+    
+    // Merge the local substitution into the current substitution
+    // but only for variables that appear in the function type
+    for (const [varName, type] of localSubstitution.entries()) {
+      // Only add substitutions for variables that appear in the function type
+      if (this.variableAppearsIn(new TypeVariable(varName), functionType)) {
+        this.currentSubstitution.set(varName, type);
+      }
+    }
     
     // Add a hint for debugging
     this.hints.push({ context: ctx, type: returnType.toString() });
@@ -1058,11 +1215,21 @@ export class ChicoryTypeChecker {
 
   visitMatchExpr(ctx: parser.MatchExprContext): ChicoryType {
     const matchedType = this.visitExpr(ctx.expr());
+    
+    // Add debug logging
+    console.log(`[visitMatchExpr] Matched type: ${matchedType}`);
+    
     let returnTypes: ChicoryType[] = [];
 
+    // Create a new scope for the match expression
+    this.environment = this.environment.pushScope();
+    
     ctx.matchArm().forEach((arm) => {
       returnTypes.push(this.visitMatchArm(arm, matchedType));
     });
+    
+    // Pop the match expression scope
+    this.environment = this.environment.popScope();
 
     // Check that all arms return the same type
     const firstType = returnTypes[0] || UnknownType;
@@ -1101,6 +1268,7 @@ export class ChicoryTypeChecker {
       const adtName = (ctx as parser.BareAdtMatchPatternContext)
         .IDENTIFIER()
         .getText();
+      
       // Check if matchedType is an ADT, a type variable, or a generic type
       if (
         !(matchedType instanceof AdtType) && 
@@ -1122,7 +1290,7 @@ export class ChicoryTypeChecker {
         return;
       }
 
-      // If it's a type variable or generic type, we can't check the constructor at compile time
+      // If it's a type variable or generic type with no arguments, we can't check the constructor at compile time
       if (
         matchedType instanceof TypeVariable || 
         (matchedType instanceof GenericType && matchedType.typeArguments.length === 0)
@@ -1131,13 +1299,28 @@ export class ChicoryTypeChecker {
         return;
       }
 
+      // Get the base type name for constructor lookup
+      let baseTypeName: string;
+      if (matchedType instanceof AdtType) {
+        baseTypeName = matchedType.name;
+      } else if (matchedType instanceof GenericType) {
+        baseTypeName = matchedType.name;
+      } else {
+        // This shouldn't happen due to the checks above
+        this.reportError(
+          `Cannot match a value of type '${matchedType}' against ADT pattern '${adtName}'`,
+          ctx
+        );
+        return;
+      }
+
       // Check if the constructor exists for this ADT
       const constructor = this.constructors.find(
-        (c) => c.name === adtName && c.adtName === matchedType?.name
+        (c) => c.name === adtName && c.adtName === baseTypeName
       );
       if (!constructor) {
         this.reportError(
-          `Constructor ${adtName} does not exist on type ${matchedType?.name}`,
+          `Constructor ${adtName} does not exist on type ${baseTypeName}`,
           ctx
         );
       }
@@ -1150,7 +1333,11 @@ export class ChicoryTypeChecker {
         .IDENTIFIER()
         .map((id) => id.getText());
 
-      if (!(matchedType instanceof AdtType)) {
+      // Check if matchedType is an ADT or a generic type
+      if (
+        !(matchedType instanceof AdtType) && 
+        !(matchedType instanceof GenericType)
+      ) {
         this.reportError(
           `Cannot match a value of type '${matchedType}' against ADT pattern '${adtName}'`,
           ctx
@@ -1158,14 +1345,29 @@ export class ChicoryTypeChecker {
         return;
       }
 
-      // Find constructor.
+      // Get the base type name for constructor lookup
+      let baseTypeName: string;
+      if (matchedType instanceof AdtType) {
+        baseTypeName = matchedType.name;
+      } else if (matchedType instanceof GenericType) {
+        baseTypeName = matchedType.name;
+      } else {
+        // This shouldn't happen due to the checks above
+        this.reportError(
+          `Cannot match a value of type '${matchedType}' against ADT pattern '${adtName}'`,
+          ctx
+        );
+        return;
+      }
+
+      // Find constructor
       const constructor = this.constructors.find(
-        (c) => c.name === adtName && c.adtName === matchedType.name
+        (c) => c.name === adtName && c.adtName === baseTypeName
       );
 
       if (!constructor) {
         this.reportError(
-          `Constructor ${adtName} does not exist on on type ${matchedType.name}`,
+          `Constructor ${adtName} does not exist on type ${baseTypeName}`,
           ctx
         );
         return;
@@ -1175,16 +1377,32 @@ export class ChicoryTypeChecker {
 
       if (!(constructorType instanceof FunctionType)) {
         this.reportError(
-          `Constructor ${adtName} does not take a parameter on on type ${matchedType.name}`,
+          `Constructor ${adtName} does not take a parameter on type ${baseTypeName}`,
           ctx
         );
         return;
       }
 
-      // Declare the parameter (we are inferring the type).
+      // For generic types, we need to extract the actual type argument
+      let paramType: ChicoryType;
+      if (matchedType instanceof GenericType && matchedType.typeArguments.length > 0) {
+        // For Option<string>, we want to extract 'string' as the parameter type
+        paramType = matchedType.typeArguments[0];
+        
+        // Add debug logging
+        console.log(`[visitPattern] Generic type ${matchedType.name} with type arg: ${paramType}`);
+      } else {
+        // For non-generic types, use the constructor's parameter type
+        paramType = constructorType.paramTypes[0];
+        
+        // Add debug logging
+        console.log(`[visitPattern] Non-generic type, param type: ${paramType}`);
+      }
+
+      // Declare the parameter with the inferred type
       this.environment.declare(
         paramName,
-        constructorType.paramTypes[0],
+        paramType,
         ctx,
         (str) => this.reportError(str, ctx)
       );
@@ -1194,7 +1412,12 @@ export class ChicoryTypeChecker {
       const adtName = (ctx as parser.AdtWithLiteralMatchPatternContext)
         .IDENTIFIER()
         .getText();
-      if (!(matchedType instanceof AdtType)) {
+      
+      // Check if matchedType is an ADT or a generic type
+      if (
+        !(matchedType instanceof AdtType) && 
+        !(matchedType instanceof GenericType)
+      ) {
         this.reportError(
           `Cannot match a value of type '${matchedType}' against ADT pattern '${adtName}'`,
           ctx
@@ -1202,14 +1425,29 @@ export class ChicoryTypeChecker {
         return;
       }
 
-      // Find constructor.
+      // Get the base type name for constructor lookup
+      let baseTypeName: string;
+      if (matchedType instanceof AdtType) {
+        baseTypeName = matchedType.name;
+      } else if (matchedType instanceof GenericType) {
+        baseTypeName = matchedType.name;
+      } else {
+        // This shouldn't happen due to the checks above
+        this.reportError(
+          `Cannot match a value of type '${matchedType}' against ADT pattern '${adtName}'`,
+          ctx
+        );
+        return;
+      }
+
+      // Find constructor
       const constructor = this.constructors.find(
-        (c) => c.name === adtName && c.adtName === matchedType.name
+        (c) => c.name === adtName && c.adtName === baseTypeName
       );
 
       if (!constructor) {
         this.reportError(
-          `Constructor ${adtName} does not exist on on type ${matchedType.name}`,
+          `Constructor ${adtName} does not exist on type ${baseTypeName}`,
           ctx
         );
         return;
@@ -1253,6 +1491,68 @@ export class ChicoryTypeChecker {
   visitJsxExpr(ctx: parser.JsxExprContext): ChicoryType {
     // For now we will treat all JSX as untyped
     return UnknownType;
+  }
+
+  private instantiateGenericType(
+    genericType: GenericType,
+    typeArgs: ChicoryType[] = []
+  ): ChicoryType {
+    // Create fresh type variables for each type parameter
+    const freshTypeVars = genericType.typeArguments.map(typeVar => {
+      if (typeVar instanceof TypeVariable) {
+        return this.newTypeVar();
+      }
+      return typeVar;
+    });
+    
+    // Create a substitution map from original type variables to fresh ones
+    const renameSubstitution = new Map<string, ChicoryType>();
+    for (let i = 0; i < genericType.typeArguments.length; i++) {
+      const origVar = genericType.typeArguments[i];
+      if (origVar instanceof TypeVariable) {
+        renameSubstitution.set(origVar.name, freshTypeVars[i]);
+      }
+    }
+    
+    // Apply the renaming substitution to all constructors
+    const constructors = this.constructors.filter(c => c.adtName === genericType.name);
+    const freshConstructors: ConstructorDefinition[] = [];
+    
+    for (const constructor of constructors) {
+      let freshType = this.applySubstitution(constructor.type, renameSubstitution);
+      
+      // If type arguments were provided, apply them
+      if (typeArgs.length > 0) {
+        const argSubstitution = new Map<string, ChicoryType>();
+        for (let i = 0; i < freshTypeVars.length && i < typeArgs.length; i++) {
+          if (freshTypeVars[i] instanceof TypeVariable) {
+            argSubstitution.set((freshTypeVars[i] as TypeVariable).name, typeArgs[i]);
+          }
+        }
+        freshType = this.applySubstitution(freshType, argSubstitution);
+      }
+      
+      freshConstructors.push({
+        adtName: constructor.adtName,
+        name: constructor.name,
+        type: freshType
+      });
+    }
+    
+    // Add the fresh constructors to our list
+    this.constructors.push(...freshConstructors);
+    
+    // Return the instantiated type
+    if (typeArgs.length > 0) {
+      return new GenericType(genericType.name, typeArgs);
+    } else {
+      return new GenericType(genericType.name, freshTypeVars);
+    }
+  }
+  
+  // Helper method to check if a variable appears in a type
+  private variableAppearsIn(typeVar: TypeVariable, type: ChicoryType): boolean {
+    return this.occursIn(typeVar, type);
   }
 
   // You *could* override visit methods you don't need, but it's not strictly necessary.

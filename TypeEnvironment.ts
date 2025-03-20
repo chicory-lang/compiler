@@ -38,4 +38,8 @@ export class TypeEnvironment {
         }
         return this.parent;
     }
+    
+    getAllTypes(): Map<string, ChicoryType> {
+        return new Map(this.bindings);
+    }
 }
