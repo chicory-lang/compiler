@@ -9,10 +9,10 @@ import { ChicoryErrorListener } from './ChicoryErrorListener';
 const rangeContains = (outer: LspRange, inner: LspRange): boolean => {
     return (
         (outer.start.line < inner.start.line ||
-          (outer.start.line === inner.start.line && outer.start.character <= inner.start.character))
+          (outer.start.line === inner.start.line && outer.start.character < inner.start.character))
         &&
         (outer.end.line > inner.end.line ||
-          (outer.end.line === inner.end.line && outer.end.character >= inner.end.character))
+          (outer.end.line === inner.end.line && outer.end.character > inner.end.character))
     );
 }
 
