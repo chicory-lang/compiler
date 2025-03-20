@@ -45,11 +45,7 @@ export class ChicoryTypeChecker {
     type1 = this.applySubstitution(type1, substitution);
     type2 = this.applySubstitution(type2, substitution);
 
-    console.log(`[unify] Unifying type1: ${type1}`);
-    console.log(`[unify] Unifying type2: ${type2}`);
-
     if (typesAreEqual(type1, type2)) {
-      console.log(`[unify] Types are equal, returning: ${type1}`);
       return type1;
     }
 
@@ -57,19 +53,16 @@ export class ChicoryTypeChecker {
       // A generic type with no arguments can be unified with any type
       // This is similar to a type variable
       if (this.occursIn(new TypeVariable(type1.name), type2)) {
-        console.log(`[unify] Occurs check failed for ${type1.name} in ${type2}`);
         return new Error(
           `Cannot unify ${type1} with ${type2} (fails occurs check)`
         );
       }
-      console.log(`[unify] Unifying generic ${type1.name} with ${type2}`);
       substitution.set(type1.name, type2);
       return type2;
     }
 
     // Also handle the reverse case
     if (type2 instanceof GenericType && type2.typeArguments.length === 0) {
-      console.log(`[unify] Handling reverse case - generic type2`);
       return this.unify(type2, type1, substitution);
     }
 
@@ -282,8 +275,6 @@ export class ChicoryTypeChecker {
     const substitution: SubstitutionMap = new Map();
     const finalType = this.applySubstitution(expressionType, substitution);
     
-    console.log(`[visitAssignStmt] Declaring ${identifierName} with type ${finalType}`);
-    
     this.environment.declare(identifierName, finalType, ctx, (str) =>
       this.reportError(str, ctx)
     );
@@ -315,7 +306,6 @@ export class ChicoryTypeChecker {
         const possibleGeneric = maybeAdtOption[0].IDENTIFIER().getText();
         const isInEnvironment = this.environment.getType(possibleGeneric);
         if (!isInEnvironment) {
-            console.log("Generic:", possibleGeneric)
           return new GenericType(possibleGeneric, []);
         }
       }
@@ -693,13 +683,9 @@ export class ChicoryTypeChecker {
 
   visitIdentifier(ctx: parser.IdentifierExpressionContext): ChicoryType {
     const identifierName = ctx.IDENTIFIER().getText();
-    console.log(`[visitIdentifier] Processing identifier: ${identifierName}`);
 
     const type = this.environment.getType(identifierName);
     if (type) {
-      console.log(
-        `[visitIdentifier] Found type in environment for ${identifierName}: ${type}`
-      );
       this.hints.push({ context: ctx, type: type.toString() });
       return type;
     }
@@ -709,29 +695,16 @@ export class ChicoryTypeChecker {
       (c) => c.name === identifierName
     );
     if (constructor) {
-      console.log(`[visitIdentifier] Found constructor: ${identifierName}`);
-      console.log(`[visitIdentifier] Constructor Name: ${constructor.name}`);
-      console.log(
-        `[visitIdentifier] Constructor ADT Name: ${constructor.adtName}`
-      );
-      console.log(
-        `[visitIdentifier] Constructor Type (FunctionType): ${constructor.type}`
-      );
       this.hints.push({ context: ctx, type: constructor.type.toString() });
       
       // Special case for no-argument constructors
       if (constructor.type instanceof FunctionType && constructor.type.paramTypes.length === 0) {
         // For no-argument constructors, return the ADT type instead of the constructor type
-        console.log(`[visitIdentifier] No-argument constructor, returning ADT type: ${constructor.adtName}`);
         return new AdtType(constructor.adtName);
       }
       
       // For constructors with arguments, return the constructor type
       return constructor.type;
-    } else {
-      console.log(
-        `[visitIdentifier] Constructor NOT found for: ${identifierName}`
-      );
     }
 
     this.reportError(`Identifier '${identifierName}' is not defined.`, ctx);
@@ -763,7 +736,6 @@ export class ChicoryTypeChecker {
     
     // Add a hint for debugging
     const recordType = new RecordType(fields);
-    console.log(`[visitRecordExpr] Created record type: ${recordType}`);
     this.hints.push({ context: ctx, type: recordType.toString() });
     
     return recordType;
@@ -859,9 +831,6 @@ export class ChicoryTypeChecker {
     ctx: parser.CallExprContext,
     functionType: ChicoryType
   ): ChicoryType {
-    // Add debug logging
-    console.log(`[visitCallExpr] Function type: ${functionType}`);
-    
     if (
       !(functionType instanceof FunctionType) &&
       !(functionType instanceof GenericType)
@@ -877,17 +846,12 @@ export class ChicoryTypeChecker {
       ? ctx.expr().map((expr) => this.visitExpr(expr))
       : [];
     
-    // Add debug logging
-    console.log(`[visitCallExpr] Argument types: ${argumentTypes.map(t => t.toString()).join(', ')}`);
-    
     let expectedParamTypes: ChicoryType[] = [];
     let returnType: ChicoryType = UnknownType;
 
     if (functionType instanceof FunctionType) {
       expectedParamTypes = functionType.paramTypes;
       returnType = functionType.returnType;
-      console.log(`[visitCallExpr] Expected param types: ${expectedParamTypes.map(t => t.toString()).join(', ')}`);
-      console.log(`[visitCallExpr] Return type before substitution: ${returnType}`);
     } else if (functionType instanceof GenericType) {
       // 1. Lookup the generic type def (e..g, from a bind stmt). For now let's assume a simple case.
       //  Ideally, we'd have a way to store and retrieve bound types from import stmts.
@@ -906,7 +870,6 @@ export class ChicoryTypeChecker {
       );
     } else {
       for (let i = 0; i < argumentTypes.length; i++) {
-        console.log(`[visitCallExpr] Unifying param ${i}: ${expectedParamTypes[i]} with arg: ${argumentTypes[i]}`);
         const result = this.unify(
           expectedParamTypes[i],
           argumentTypes[i],
@@ -917,8 +880,6 @@ export class ChicoryTypeChecker {
             `Argument ${i + 1} type mismatch: ${result.message}`,
             ctx
           );
-        } else {
-          console.log(`[visitCallExpr] Unified result for param ${i}: ${result}`);
         }
       }
     }
@@ -926,7 +887,6 @@ export class ChicoryTypeChecker {
     returnType = this.applySubstitution(returnType, substitution);
     
     // Add a hint for debugging
-    console.log(`[visitCallExpr] Return type after substitution: ${returnType}`);
     this.hints.push({ context: ctx, type: returnType.toString() });
     
     return returnType;
@@ -1007,7 +967,6 @@ export class ChicoryTypeChecker {
         return;
       }
 
-      console.log("type???:", matchedType)
       // Check if the constructor exists for this ADT
       const constructor = this.constructors.find(
         (c) => c.name === adtName && c.adtName === matchedType?.name
