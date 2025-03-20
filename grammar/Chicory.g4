@@ -50,7 +50,7 @@ recordTypeAnontation: IDENTIFIER ':' (primitiveType | recordType | IDENTIFIER | 
 
 tupleType: '[' NL* typeExpr (',' NL* typeExpr)* ','? NL* ']';
 
-primitiveType: 'number' | 'string' | 'boolean' | 'unit';
+primitiveType: 'number' | 'string' | 'boolean' | 'void';
 
 functionType: '(' NL* (typeParam (',' NL* typeParam)*)? NL* ')' '=>' NL* typeExpr;
 

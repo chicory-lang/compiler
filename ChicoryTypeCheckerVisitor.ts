@@ -474,7 +474,7 @@ export class ChicoryTypeChecker {
     if (ctx.getText() === "number") return NumberType;
     if (ctx.getText() === "string") return StringType;
     if (ctx.getText() === "boolean") return BooleanType;
-    if (ctx.getText() === "unit") return UnitType;
+    if (ctx.getText() === "void") return UnitType;
     return UnknownType;
   }
 
