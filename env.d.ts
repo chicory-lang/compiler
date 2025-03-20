@@ -2,6 +2,8 @@ import { ParserRuleContext } from "antlr4ng";
 
 type CompilationError = { message: string; context: ParserRuleContext };
 
+type SyntaxError = { message: string; range: LspRange }
+
 type LspRange = {
     start: {
         line: number;
@@ -18,6 +20,11 @@ type LspDiagnostic = {
     message: string;
     range: LspRange;
     source: string;
+}
+
+type TypeHintWithContext = {
+    context: ParserRuleContext;
+    type: string;
 }
 
 type TypeHint = {

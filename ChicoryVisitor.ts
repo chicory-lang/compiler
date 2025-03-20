@@ -2,6 +2,7 @@ import { ParserRuleContext } from 'antlr4ng';
 import * as parser from './generated/ChicoryParser';
 import { ChicoryTypeChecker } from './ChicoryTypeCheckerVisitor';
 import { CompilationError } from './env';
+import { FunctionType } from './ChicoryTypes';
 
 export class ChicoryParserVisitor {
     private typeChecker: ChicoryTypeChecker;
@@ -65,7 +66,7 @@ export class ChicoryParserVisitor {
 
     visitAssignStmt(ctx: parser.AssignStmtContext): string {
         const assignKwd = ctx.assignKwd().getText(); // 'let' or 'const'
-        const identifier = ctx.IDENTIFIER().getText();
+        const identifier = ctx.identifierWrapper().getText();
         const expr = this.visitExpr(ctx.expr());
         return `${this.indent()}${assignKwd} ${identifier} = ${expr}`;
     }
@@ -92,11 +93,11 @@ export class ChicoryParserVisitor {
                 
                 // Check if the constructor takes parameters
                 const constructorType = constructor.type;
-                if (constructorType.kind === 'function' && constructorType.params.length > 0) {
+                if (constructorType instanceof FunctionType && constructorType.paramTypes.length > 0) {
                     return `${this.indent()}const ${constructorName} = (value) => { return { type: "${constructorName}", value }; };`;
                 } else {
                     // For no-argument constructors, create the object directly
-                    return `${this.indent()}const ${constructorName} = { type: "${constructorName}" };`;
+                    return `${this.indent()}const ${constructorName} = () => { return { type: "${constructorName}" }; };`;
                 }
             }).join("\n");
             
@@ -408,7 +409,7 @@ export class ChicoryParserVisitor {
         const constructor = this.typeChecker.getConstructors().find(c => c.name === name);
         if (constructor) {
             const constructorType = constructor.type;
-            if (constructorType.kind === 'function' && constructorType.params.length === 0) {
+            if (constructorType instanceof FunctionType && constructorType.paramTypes.length === 0) {
                 // For no-argument constructors, return the object directly
                 return `{ type: "${name}" }`;
             }

@@ -3,7 +3,37 @@ import { ChicoryLexer } from './generated/ChicoryLexer';
 import { ChicoryParser } from './generated/ChicoryParser';
 import { ChicoryParserVisitor } from './ChicoryVisitor';
 import { ChicoryTypeChecker } from './ChicoryTypeCheckerVisitor';
-import { LspDiagnostic, CompilationError, TypeHint } from './env';
+import { LspDiagnostic, CompilationError, SyntaxError, TypeHint, LspRange } from './env';
+import { ChicoryErrorListener } from './ChicoryErrorListener';
+
+const rangeContains = (outer: LspRange, inner: LspRange): boolean => {
+    return (
+        (outer.start.line < inner.start.line ||
+          (outer.start.line === inner.start.line && outer.start.character <= inner.start.character))
+        &&
+        (outer.end.line > inner.end.line ||
+          (outer.end.line === inner.end.line && outer.end.character >= inner.end.character))
+    );
+}
+
+const filterOutErrorsThatContainOtherErrors = (errors: LspDiagnostic[]): LspDiagnostic[] => {
+    const filteredErrors: LspDiagnostic[] = [];
+
+    for (const error of errors) {
+        let containsOtherError = false;
+
+        for (const otherError of errors) {
+            if (error !== otherError && rangeContains(error.range, otherError.range)) {
+                containsOtherError = true
+            }
+        }
+        if (!containsOtherError) {
+            filteredErrors.push(error);
+        }
+    }
+
+    return filteredErrors;
+}
 
 const getRange = (ctx: ParserRuleContext, tokenStream: TokenStream) => {
     const {start, stop} = ctx.getSourceInterval()
@@ -22,6 +52,12 @@ const compilerErrorToLspError = (tokenStream: TokenStream) => ((e: CompilationEr
     source: "chicory",
 }))
 
+const syntaxErrorToLspError = (e: SyntaxError) => ({
+    severity: 1, // 1 is error
+    source: "chicory",
+    ...e
+})
+
 export type CompileResult = {
     code: string;
     errors: LspDiagnostic[];
@@ -36,6 +72,13 @@ export default (source: string): CompileResult => {
     let lexer = new ChicoryLexer(inputStream);
     let tokenStream = new CommonTokenStream(lexer);
     let parser = new ChicoryParser(tokenStream);
+
+    const errorListener = new ChicoryErrorListener();
+    lexer.removeErrorListeners();
+    lexer.addErrorListener(errorListener);
+    parser.removeErrorListeners();
+    parser.addErrorListener(errorListener);
+
     let tree = parser.program();
     
     // Create type checker first
@@ -46,7 +89,11 @@ export default (source: string): CompileResult => {
     const {code, errors: unprocessedErrors, hints: unprocessedHints} = visitor.getOutput(tree) || {code: "", errors: [], hints: []}
 
     const mapErrors = compilerErrorToLspError(tokenStream)
-    const errors = unprocessedErrors.map(mapErrors)
+    const syntaxErrors = errorListener.getErrors();
+    const errors = filterOutErrorsThatContainOtherErrors([
+        ...unprocessedErrors.map(mapErrors), 
+        ...syntaxErrors.map(syntaxErrorToLspError)
+    ])
     
     // Convert hints to LSP format
     const hints = unprocessedHints.map(({context, type}) => ({

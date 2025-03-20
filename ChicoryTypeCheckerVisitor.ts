@@ -1,1306 +1,1140 @@
-// ChicoryTypeCheckerVisitor.ts
-import { ParserRuleContext, Token, TerminalNode } from 'antlr4ng';
-import * as parser from './generated/ChicoryParser';
-import { CompilationError, LspRange } from './env';
+import { ParserRuleContext } from "antlr4ng";
+import * as parser from "./generated/ChicoryParser";
+import { ChicoryVisitor as ChicoryParserBaseVisitor } from "./generated/ChicoryVisitor"; // Assuming a base visitor is generated
+import {
+  ChicoryType,
+  ConstructorDefinition,
+  StringType,
+  NumberType,
+  BooleanType,
+  UnitType,
+  FunctionType,
+  RecordType,
+  TupleType,
+  AdtType,
+  UnknownType,
+  typesAreEqual,
+  GenericType,
+  TypeVariable,
+} from "./ChicoryTypes";
+import { TypeEnvironment } from "./TypeEnvironment";
+import { CompilationError, TypeHint, TypeHintWithContext } from "./env";
 
-type Type =
-    | { kind: 'external', module: string }
-    | { kind: 'primitive', name: 'number' | 'string' | 'boolean' | 'jsx' | 'unit' }
-    | { kind: 'function', params: Type[], return: Type }
-    | { kind: 'tuple', elements: Type[] }
-    | { kind: 'record', fields: Map<string, Type> }
-    | { kind: 'adt', name: string }
-    | { kind: 'generic', base: Type, typeArgs: Type[] }
-    | { kind: 'typeParam', name: string }
-    | { kind: 'variable', id: number };
-
-type SymbolInfo = {
-    name: string;               // The name of the symbol (e.g., variable name, type name, constructor name)
-    type: Type;                // The inferred type of the symbol
-    context: ParserRuleContext;  // The context in which the symbol was defined (to lookup location)
-    kind: 'variable' | 'type' | 'constructor' | 'parameter' | 'import'; // The kind of symbol
-};
-
-type ConstructorDef = {
-    adtName: string;
-    name: string;
-    type: Type;
-    context: ParserRuleContext;
-};
-
-type TypeDef =
-    | { kind: 'primitive', name: 'number' | 'string' | 'boolean' | 'unit' | 'typeParam', typeParam?: string }
-    | { kind: 'function', params: Type[], return: Type }
-    | { kind: 'tuple', elements: Type[] }
-    | { kind: 'record', fields: Map<string, Type> }
-    | { kind: 'adt', constructors: ConstructorDef[] }
-    | { kind: 'generic', base: Type, typeArgs: Type[] };
-
-type EnvEntry = { type: Type; context: ParserRuleContext };
+type SubstitutionMap = Map<string, ChicoryType>;
 
 export class ChicoryTypeChecker {
-    private typeDefs: Map<string, { def: TypeDef; context: ParserRuleContext }> = new Map();
-    private constructorMap: Map<string, ConstructorDef> = new Map();
-    private currentEnv: Map<string, EnvEntry>[] = [new Map()];
-    private substitution: Map<number, Type> = new Map();
-    private errors: CompilationError[] = [];
-    private symbols: SymbolInfo[] = [];
-    private typeHints: { context: ParserRuleContext, type: string }[] = [];
-    private freshVarCounter = 0;
-    
-    // Public method to get all ADT constructors
-    getConstructors(): ConstructorDef[] {
-        return Array.from(this.constructorMap.values());
+  private environment: TypeEnvironment;
+  private errors: CompilationError[] = [];
+  private hints: TypeHintWithContext[] = [];
+  private constructors: ConstructorDefinition[] = [];
+  private nextTypeVarId: number = 0;
+
+  constructor() {
+    this.environment = new TypeEnvironment(null); // Initialize with the global scope
+  }
+
+  private newTypeVar(): TypeVariable {
+    return new TypeVariable(`T${this.nextTypeVarId++}`);
+  }
+
+  unify(
+    type1: ChicoryType,
+    type2: ChicoryType,
+    substitution: SubstitutionMap
+  ): ChicoryType | Error {
+    type1 = this.applySubstitution(type1, substitution);
+    type2 = this.applySubstitution(type2, substitution);
+
+    console.log(`[unify] Unifying type1: ${type1}`);
+    console.log(`[unify] Unifying type2: ${type2}`);
+
+    if (typesAreEqual(type1, type2)) {
+      console.log(`[unify] Types are equal, returning: ${type1}`);
+      return type1;
     }
 
-    private freshVar(): Type {
-        return { kind: 'variable', id: this.freshVarCounter++ };
-    }
-
-    private resolve(type: Type): Type {
-        while (type.kind === 'variable') {
-            const sub = this.substitution.get(type.id);
-            if (!sub) break;
-            type = sub;
-        }
-        return type;
-    }
-
-    private unify(t1: Type, t2: Type, ctx: ParserRuleContext): void {
-        t1 = this.resolve(t1);
-        t2 = this.resolve(t2);
-
-        if (t1.kind === 'variable' && t2.kind === 'variable' && t1.id === t2.id) return;
-        if (t1.kind === 'variable') {
-            this.substitution.set(t1.id, t2);
-            return;
-        }
-        if (t2.kind === 'variable') {
-            this.substitution.set(t2.id, t1);
-            return;
-        }
-
-        if (t1.kind === 'primitive' && t2.kind === 'primitive' && t1.name === t2.name) return;
-        
-        // Handle type parameters in generic functions
-        if (t1.kind === 'typeParam' || t2.kind === 'typeParam') {
-            // Type parameters can unify with anything
-            return;
-        }
-
-        if (t1.kind === 'function' && t2.kind === 'function') {
-            if (t1.params.length !== t2.params.length) {
-                this.errors.push({ message: `Function parameter count mismatch`, context: ctx });
-                return;
-            }
-            t1.params.forEach((p, i) => this.unify(p, t2.params[i], ctx));
-            this.unify(t1.return, t2.return, ctx);
-            return;
-        }
-
-        if (t1.kind === 'generic' && t2.kind === 'generic') {
-            this.unify(t1.base, t2.base, ctx);
-            if (t1.typeArgs.length !== t2.typeArgs.length) {
-                this.errors.push({ message: `Generic type argument count mismatch`, context: ctx });
-                return;
-            }
-            t1.typeArgs.forEach((arg, i) => this.unify(arg, t2.typeArgs[i], ctx));
-            return;
-        }
-
-        if (t1.kind === 'tuple' && t2.kind === 'tuple') {
-            if (t1.elements.length !== t2.elements.length) {
-                this.errors.push({ message: `Tuple length mismatch`, context: ctx });
-                return;
-            }
-            t1.elements.forEach((e, i) => this.unify(e, t2.elements[i], ctx));
-            return;
-        }
-
-        if (t1.kind === 'record' && t2.kind === 'record') {
-            const allKeys = new Set([...t1.fields.keys(), ...t2.fields.keys()]);
-            for (const key of allKeys) {
-                const t1Field = t1.fields.get(key);
-                const t2Field = t2.fields.get(key);
-                if (!t1Field || !t2Field) {
-                    this.errors.push({ message: `Record field '${key}' mismatch`, context: ctx });
-                    continue;
-                }
-                this.unify(t1Field, t2Field, ctx);
-            }
-            return;
-        }
-
-        if (t1.kind === 'adt' && t2.kind === 'adt' && t1.name === t2.name) return;
-        
-        // Special case for ADT constructors with generic functions
-        if ((t1.kind === 'function' && t1.return.kind === 'adt') ||
-            (t2.kind === 'function' && t2.return.kind === 'adt')) {
-            // Allow ADT constructors to be used with generic functions
-            return;
-        }
-
-        this.errors.push({
-            message: `Type mismatch between ${this.typeToString(t1)} and ${this.typeToString(t2)}`,
-            context: ctx
-        });
-    }
-
-    private typeToString(type: Type): string {
-        type = this.resolve(type);
-        switch (type.kind) {
-            case 'primitive': return type.name;
-            case 'variable': return `T${type.id}`;
-            case 'function': return `(${type.params.map(t => this.typeToString(t)).join(', ')}) => ${this.typeToString(type.return)}`;
-            case 'tuple': return `[${type.elements.map(t => this.typeToString(t)).join(', ')}]`;
-            case 'record': {
-                const fields = Array.from(type.fields.entries()).map(([k, v]) => `${k}: ${this.typeToString(v)}`);
-                return `{ ${fields.join(', ')} }`;
-            }
-            case 'adt': return type.name;
-            case 'typeParam': return type.name;
-            case 'generic': return `${this.typeToString(type.base)}<${type.typeArgs.map(t => this.typeToString(t)).join(', ')}>`;
-            case 'external': return `external from ${type.module}`;
-            default: return 'unknown';
-        }
-    }
-    
-    // Add a type hint for a given expression
-    private addTypeHint(ctx: ParserRuleContext, type: Type): void {
-        const typeStr = this.typeToString(type);
-        this.typeHints.push({
-            context: ctx,
-            type: typeStr
-        });
-    }
-
-    check(ctx: parser.ProgramContext): { errors: CompilationError[]; symbols: SymbolInfo[]; hints: { context: ParserRuleContext, type: string }[] } {
-        this.errors = [];
-        this.symbols = [];
-        this.typeHints = [];
-        this.visitProgram(ctx);
-        return { errors: this.errors, symbols: this.symbols, hints: this.typeHints };
-    }
-
-    private visitProgram(ctx: parser.ProgramContext): void {
-        ctx.stmt().forEach(stmt => this.visitStmt(stmt));
-    }
-
-    private visitStmt(ctx: parser.StmtContext): void {
-        if (ctx.assignStmt()) {
-            this.visitAssignStmt(ctx.assignStmt()!);
-        } else if (ctx.typeDefinition()) {
-            this.visitTypeDefinition(ctx.typeDefinition()!);
-        } else if (ctx.importStmt()) { // ADD THIS CHECK
-            this.visitImportStmt(ctx.importStmt()!);
-        } else if (ctx.expr()) {
-            this.visitExpr(ctx.expr()!);
-        }
-        else {              
-            throw new Error('Unknown statement type');
-        }
-    }
-
-    private visitImportStmt(ctx: parser.ImportStmtContext): void {
-        // Handle regular imports
-        if (ctx.getText().startsWith('import')) {
-            // Handle default import (if present)
-            if (ctx.IDENTIFIER()) {
-                const defaultImport = ctx.IDENTIFIER()!.getText();
-                this.declareSymbol(defaultImport, {
-                    kind: 'external',
-                    module: ctx.STRING().getText()
-                }, ctx);
-            }
-        
-            // Handle destructuring imports
-            const destructuring = ctx.destructuringImportIdentifier();
-            if (destructuring) {
-                destructuring.IDENTIFIER().forEach(id => {
-                    this.declareSymbol(id.getText(), {
-                        kind: 'external',
-                        module: ctx.STRING().getText()
-                    }, ctx);
-                });
-            }
-        }
-        // Handle binding imports
-        else if (ctx.getText().startsWith('bind')) {
-            // Handle default binding import (if present)
-            if (ctx.IDENTIFIER() && ctx.typeExpr()) {
-                const name = ctx.IDENTIFIER()!.getText();
-                const typeExpr = ctx.typeExpr()!;
-                
-                // Create a type for the binding based on the type expression
-                const typeParams: string[] = [];
-                const bindingType = this.typeDefToType(
-                    this.visitTypeExpr(typeExpr, undefined, typeParams),
-                    ''
-                );
-                
-                // Declare the symbol with the specified type
-                this.declareSymbol(name, bindingType, ctx);
-            }
-            
-            // Handle destructuring binding imports
-            const binding = ctx.bindingImportIdentifier();
-            if (binding) {
-                binding.bindingIdentifier().forEach(bindingId => {
-                    const name = bindingId.IDENTIFIER().getText();
-                    const typeExpr = bindingId.typeExpr();
-                    
-                    // Create a type for the binding based on the type expression
-                    const typeParams: string[] = [];
-                    const bindingType = this.typeDefToType(
-                        this.visitTypeExpr(typeExpr, undefined, typeParams),
-                        ''
-                    );
-                    
-                    // Declare the symbol with the specified type
-                    this.declareSymbol(name, bindingType, ctx);
-                });
-            }
-        }
-    }
-
-    private declareSymbol(
-        name: string, 
-        type: Type,
-        context: ParserRuleContext
-    ): void {
-        // Check for existing declaration in current scope
-        if (this.currentEnv[this.currentEnv.length - 1].has(name)) {
-            this.errors.push({
-                message: `Duplicate identifier '${name}'`,
-                context: context
-            });
-            return;
-        }
-    
-        // Add to environment and symbol table
-        this.currentEnv[this.currentEnv.length - 1].set(name, { type, context });
-        this.symbols.push({
-            name,
-            type,
-            context,
-            kind: 'import'
-        });
-    }
-
-    private visitAssignStmt(ctx: parser.AssignStmtContext): void {
-        const varName = ctx.IDENTIFIER().getText();
-        const exprType = this.visitExpr(ctx.expr());
-        this.currentEnv[this.currentEnv.length - 1].set(varName, { type: exprType, context: ctx });
-        this.symbols.push({
-            name: varName,
-            type: exprType,
-            context: ctx,
-            kind: 'variable'
-        });
-    }
-
-    private visitTypeDefinition(ctx: parser.TypeDefinitionContext): void {
-        const typeName = ctx.IDENTIFIER().getText();
-        
-        // Handle type parameters if present
-        const typeParams: string[] = [];
-        if (ctx.typeParams()) {
-            ctx.typeParams()!.IDENTIFIER().forEach(id => {
-                typeParams.push(id.getText());
-            });
-        }
-        
-        // Visit the type expression with type parameters
-        const typeExpr = this.visitTypeExpr(ctx.typeExpr(), typeName, typeParams);
-        
-        this.typeDefs.set(typeName, { def: typeExpr, context: ctx });
-        this.symbols.push({
-            name: typeName,
-            type: this.typeDefToType(typeExpr, typeName),
-            context: ctx,
-            kind: 'type'
-        });
-        
-        if (typeExpr.kind === 'adt') {
-            typeExpr.constructors.forEach(constructor => {
-                this.constructorMap.set(constructor.name, constructor);
-                this.symbols.push({
-                    name: constructor.name,
-                    type: constructor.type,
-                    context: constructor.context,
-                    kind: 'constructor'
-                });
-                
-                // Register constructor in the current scope
-                this.currentEnv[this.currentEnv.length - 1].set(constructor.name, { 
-                    type: constructor.type, 
-                    context: constructor.context 
-                });
-            });
-        }
-    }
-
-    private typeDefToType(typeDef: TypeDef, typeName: string): Type {
-        switch (typeDef.kind) {
-            case 'primitive': 
-                if (typeDef.name === 'typeParam') {
-                    if (!typeDef.typeParam) {
-                        throw new Error(`Type parameter ${typeDef.name} is not defined`);
-                    }
-                    return { kind: 'typeParam', name: typeDef.typeParam };
-                }
-                return { kind: 'primitive', name: typeDef.name };
-            case 'record': return { kind: 'record', fields: typeDef.fields };
-            case 'tuple': return { kind: 'tuple', elements: typeDef.elements };
-            case 'function': 
-                // Make sure we preserve type parameters in function types
-                return { 
-                    kind: 'function', 
-                    params: typeDef.params.map(p => {
-                        // Ensure type parameters are preserved
-                        if (p.kind === 'typeParam') {
-                            return { kind: 'typeParam', name: p.name };
-                        }
-                        return p;
-                    }), 
-                    return: typeDef.return.kind === 'typeParam' 
-                        ? { kind: 'typeParam', name: typeDef.return.name }
-                        : typeDef.return
-                };
-            case 'adt': return { kind: 'adt', name: typeName };
-            case 'generic': return { kind: 'generic', base: typeDef.base, typeArgs: typeDef.typeArgs };
-        }
-    }
-
-    private visitTypeExpr(ctx: parser.TypeExprContext, typeName?: string, typeParams: string[] = []): TypeDef {
-        // Handle direct type parameter references first
-        const text = ctx.getText();
-        
-        // Check if this is a direct reference to a type parameter
-        if (typeParams.includes(text)) {
-            return { 
-                kind: 'primitive', 
-                name: 'typeParam',
-                typeParam: text
-            };
-        }
-        
-        // Create a scope for type parameters if they exist
-        const typeParamScope = new Map<string, Type>();
-        typeParams.forEach(param => {
-            typeParamScope.set(param, { kind: 'typeParam', name: param });
-        });
-        
-        // Special case for direct identifier references
-        if (ctx.getChildCount() === 1 && ctx.getChild(0) instanceof TerminalNode) {
-            // Check if it's a defined type
-            const typeDefEntry = this.typeDefs.get(text);
-            if (typeDefEntry) {
-                return typeDefEntry.def;
-            }
-            
-            // If it's a single uppercase letter, it might be an implicit type parameter
-            if (text.length === 1 && /[A-Z]/.test(text)) {
-                return { 
-                    kind: 'primitive', 
-                    name: 'typeParam',
-                    typeParam: text
-                };
-            }
-            
-            // Check if it's a type parameter from the function context
-            const functionTypeCtx = this.findParentOfType(ctx, parser.FunctionTypeContext);
-            if (functionTypeCtx) {
-                // We're inside a function type, so this might be a type parameter
-                return { 
-                    kind: 'primitive', 
-                    name: 'typeParam',
-                    typeParam: text
-                };
-            }
-            
-            // If it's not a defined type and not a type parameter, it's an error
-            this.errors.push({ message: `Undefined type: ${text}`, context: ctx });
-        }
-        
-        if (ctx.adtType()) {
-            // Check if this is actually a reference to a type parameter
-            const text = ctx.getText();
-            if (typeParams.includes(text)) {
-                return { 
-                    kind: 'primitive', 
-                    name: 'typeParam',
-                    typeParam: text
-                };
-            }
-            
-            // Check if it's a reference to a defined type
-            const typeDefEntry = this.typeDefs.get(text);
-            if (typeDefEntry) {
-                return typeDefEntry.def;
-            }
-            
-            // Only treat it as an ADT if it's part of a type definition
-            if (!typeName) {
-                // This might be a type parameter in a function signature
-                const functionTypeCtx = this.findParentOfType(ctx, parser.FunctionTypeContext);
-                if (functionTypeCtx) {
-                    return { 
-                        kind: 'primitive', 
-                        name: 'typeParam',
-                        typeParam: text
-                    };
-                }
-                
-                this.errors.push({ message: 'ADT type must be part of a type definition', context: ctx });
-                return { kind: 'primitive', name: 'number' };
-            }
-            return this.visitAdtType(ctx.adtType()!, typeName, typeParamScope);
-        }
-        if (ctx.recordType()) return this.visitRecordType(ctx.recordType()!, typeParamScope);
-        if (ctx.tupleType()) return this.visitTupleType(ctx.tupleType()!, typeParamScope);
-        if (ctx.primitiveType()) return this.visitPrimitiveType(ctx.primitiveType()!);
-        if (ctx.functionType()) return this.visitFunctionType(ctx.functionType()!, typeParamScope);
-        if (ctx.genericTypeExpr()) return this.visitGenericTypeExpr(ctx.genericTypeExpr()!, typeParamScope);
-        
-        this.errors.push({ message: `Invalid type expression: ${ctx.getText()}`, context: ctx });
-        return { kind: 'primitive', name: 'number' };
-    }
-
-    // Helper method to collect type parameters from a function signature
-    private collectFunctionTypeParams(
-        ctx: parser.FunctionTypeContext, 
-        existingParams: Set<string>
-    ): Set<string> {
-        const functionTypeParams = new Set<string>(existingParams);
-        
-        // Check parameters for potential type parameters
-        ctx.typeParam().forEach(param => {
-            if (param instanceof parser.UnnamedTypeParamContext) {
-                const typeExpr = param.typeExpr();
-                const typeText = typeExpr.getText();
-                
-                // If it's an identifier and not a defined type, it's likely a type parameter
-                if (typeExpr.getChildCount() === 1 && 
-                    typeExpr.getChild(0) instanceof TerminalNode &&
-                    !this.typeDefs.get(typeText)) {
-                    functionTypeParams.add(typeText);
-                }
-            }
-        });
-        
-        // Check return type for potential type parameters
-        const returnTypeExpr = ctx.typeExpr();
-        const returnTypeText = returnTypeExpr.getText();
-        
-        if (returnTypeExpr.getChildCount() === 1 && 
-            returnTypeExpr.getChild(0) instanceof TerminalNode &&
-            !this.typeDefs.get(returnTypeText)) {
-            functionTypeParams.add(returnTypeText);
-        }
-        
-        return functionTypeParams;
-    }
-    
-    // Helper method to process a function parameter
-    private processFunctionParam(
-        param: parser.TypeParamContext, 
-        functionTypeParams: Set<string>
-    ): Type {
-        const typeParamArray = Array.from(functionTypeParams);
-        
-        if (param instanceof parser.NamedTypeParamContext) {
-            // Named parameter (with type annotation)
-            return this.typeDefToType(
-                this.visitTypeExpr(param.typeExpr(), undefined, typeParamArray), 
-                ''
-            );
-        } else if (param instanceof parser.UnnamedTypeParamContext) {
-            // Unnamed parameter (just a type)
-            const typeExpr = param.typeExpr();
-            const typeText = typeExpr.getText();
-            
-            // Check if it's a type parameter
-            if (functionTypeParams.has(typeText)) {
-                return { kind: 'typeParam', name: typeText };
-            }
-            
-            // Check if it's a defined type
-            const typeDefEntry = this.typeDefs.get(typeText);
-            if (typeDefEntry) {
-                // It's a user-defined type
-                return this.typeDefToType(typeDefEntry.def, typeText);
-            }
-            
-            // Otherwise process it normally
-            return this.typeDefToType(
-                this.visitTypeExpr(typeExpr, undefined, typeParamArray), 
-                ''
-            );
-        }
-        
-        // This should never happen if the grammar is correct
-        return { kind: 'primitive', name: 'unit' };
-    }
-    
-    // Helper method to process a function return type
-    private processFunctionReturnType(
-        returnTypeExpr: parser.TypeExprContext, 
-        functionTypeParams: Set<string>
-    ): Type {
-        const returnTypeText = returnTypeExpr.getText();
-        const typeParamArray = Array.from(functionTypeParams);
-        
-        // Check if return type is a type parameter
-        if (functionTypeParams.has(returnTypeText)) {
-            return { kind: 'typeParam', name: returnTypeText };
-        }
-        
-        // Check if return type is a defined type
-        const returnTypeDefEntry = this.typeDefs.get(returnTypeText);
-        if (returnTypeDefEntry) {
-            // It's a user-defined type
-            return this.typeDefToType(returnTypeDefEntry.def, returnTypeText);
-        }
-        
-        // For more complex return types
-        const returnTypeDef = this.visitTypeExpr(returnTypeExpr, undefined, typeParamArray);
-        return this.typeDefToType(returnTypeDef, '');
-    }
-    
-    private visitFunctionType(ctx: parser.FunctionTypeContext, typeParamScope: Map<string, Type> = new Map()): TypeDef {
-        // Step 1: Collect all type parameters from the function signature
-        const functionTypeParams = this.collectFunctionTypeParams(
-            ctx, 
-            new Set(Array.from(typeParamScope.keys()))
+    if (type1 instanceof GenericType && type1.typeArguments.length === 0) {
+      // A generic type with no arguments can be unified with any type
+      // This is similar to a type variable
+      if (this.occursIn(new TypeVariable(type1.name), type2)) {
+        console.log(`[unify] Occurs check failed for ${type1.name} in ${type2}`);
+        return new Error(
+          `Cannot unify ${type1} with ${type2} (fails occurs check)`
         );
-        
-        // Step 2: Process parameters with the complete set of type parameters
-        const paramTypes: Type[] = ctx.typeParam().map(param => 
-            this.processFunctionParam(param, functionTypeParams)
+      }
+      console.log(`[unify] Unifying generic ${type1.name} with ${type2}`);
+      substitution.set(type1.name, type2);
+      return type2;
+    }
+
+    // Also handle the reverse case
+    if (type2 instanceof GenericType && type2.typeArguments.length === 0) {
+      console.log(`[unify] Handling reverse case - generic type2`);
+      return this.unify(type2, type1, substitution);
+    }
+
+    if (type1 instanceof AdtType && type2 instanceof AdtType) {
+      if (type1.name === type2.name) {
+        return type1;
+      }
+      return new Error(
+        `Cannot unify ADT types with different names: ${type1.name} and ${type2.name}`
+      );
+    }
+
+    if (type1 instanceof TypeVariable) {
+      if (substitution.has(type1.name)) {
+        return this.unify(substitution.get(type1.name)!, type2, substitution);
+      }
+      if (type2 instanceof TypeVariable && type1.name === type2.name) {
+        return type1;
+      }
+      if (this.occursIn(type1, type2)) {
+        return new Error(
+          `Cannot unify ${type1} with ${type2} (fails occurs check)`
         );
-        
-        // Step 3: Process the return type
-        const returnType = this.processFunctionReturnType(ctx.typeExpr(), functionTypeParams);
-        
-        // Step 4: Create and return the function type definition
-        return { 
-            kind: 'function', 
-            params: paramTypes, 
-            return: returnType 
-        };
+      }
+      substitution.set(type1.name, type2);
+      return type2;
     }
 
-    private visitGenericTypeExpr(ctx: parser.GenericTypeExprContext, typeParamScope: Map<string, Type> = new Map()): TypeDef {
-        let baseType: Type;
-        
-        // Get the base type (identifier)
-        const typeName = ctx.IDENTIFIER().getText();
-        
-        // Check if it's a type parameter
-        if (typeParamScope.has(typeName)) {
-            baseType = typeParamScope.get(typeName)!;
-        } else {
-            baseType = this.lookupType(typeName, ctx);
-        }
-        
-        // Process type arguments
-        const typeArgs: Type[] = [];
-        for (const typeExpr of ctx.typeExpr()) {
-            const typeText = typeExpr.getText();
-            
-            // Check if the type argument is a direct reference to a type parameter
-            if (typeText && typeParamScope.has(typeText)) {
-                typeArgs.push(typeParamScope.get(typeText)!);
-            } else {
-                const typeArg = this.typeDefToType(
-                    this.visitTypeExpr(typeExpr, undefined, Array.from(typeParamScope.keys())), 
-                    ''
-                );
-                typeArgs.push(typeArg);
-            }
-        }
-        
-        return {
-            kind: 'generic',
-            base: baseType,
-            typeArgs: typeArgs
-        };
+    if (type2 instanceof TypeVariable) {
+      return this.unify(type2, type1, substitution);
     }
 
-    private visitAdtType(ctx: parser.AdtTypeContext, typeName: string, typeParamScope: Map<string, Type> = new Map()): TypeDef {
-        const constructors: ConstructorDef[] = [];
-        const adtType: Type = { kind: 'adt', name: typeName };
+    if (type1 instanceof FunctionType && type2 instanceof FunctionType) {
+      if (type1.paramTypes.length !== type2.paramTypes.length) {
+        return new Error(
+          "Cannot unify function types with different number of parameters"
+        );
+      }
+      for (let i = 0; i < type1.paramTypes.length; i++) {
+        const result = this.unify(
+          type1.paramTypes[i],
+          type2.paramTypes[i],
+          substitution
+        );
+        if (result instanceof Error) {
+          return result;
+        }
+      }
+      return this.unify(type1.returnType, type2.returnType, substitution);
+    }
+
+    if (type1 instanceof TupleType && type2 instanceof TupleType) {
+      if (type1.elementTypes.length !== type2.elementTypes.length) {
+        return new Error("Cannot unify tuples with different lengths");
+      }
+
+      for (let i = 0; i < type1.elementTypes.length; i++) {
+        const result = this.unify(
+          type1.elementTypes[i],
+          type2.elementTypes[i],
+          substitution
+        );
+        if (result instanceof Error) {
+          return result;
+        }
+      }
+
+      return type1;
+    }
+
+    // Add other type-specific unification rules (RecordType etc.) as needed
+    return new Error(`Cannot unify ${type1} with ${type2}`);
+  }
+
+  applySubstitution(
+    type: ChicoryType,
+    substitution: SubstitutionMap
+  ): ChicoryType {
+    if (type instanceof TypeVariable) {
+      if (substitution.has(type.name)) {
+        return this.applySubstitution(
+          substitution.get(type.name)!,
+          substitution
+        );
+      }
+      return type;
+    }
+
+    // Add case for GenericType
+    if (type instanceof GenericType) {
+      if (type.typeArguments.length === 0 && substitution.has(type.name)) {
+        return this.applySubstitution(substitution.get(type.name)!, substitution);
+      }
+      return new GenericType(
+        type.name,
+        type.typeArguments.map(t => this.applySubstitution(t, substitution))
+      );
+    }
+
+    if (type instanceof FunctionType) {
+      const newParamTypes = type.paramTypes.map((p) =>
+        this.applySubstitution(p, substitution)
+      );
+      const newReturnType = this.applySubstitution(
+        type.returnType,
+        substitution
+      );
+      return new FunctionType(newParamTypes, newReturnType, type.constructorName);
+    }
+
+    if (type instanceof TupleType) {
+      return new TupleType(
+        type.elementTypes.map((e) => this.applySubstitution(e, substitution))
+      );
+    }
+
+    return type;
+  }
+
+  occursIn(typeVar: TypeVariable, type: ChicoryType): boolean {
+    if (type instanceof TypeVariable) {
+      return typeVar.name === type.name;
+    }
+
+    // Add case for GenericType
+    if (type instanceof GenericType) {
+      if (type.name === typeVar.name) {
+        return true;
+      }
+      return type.typeArguments.some(t => this.occursIn(typeVar, t));
+    }
+
+    if (type instanceof FunctionType) {
+      return (
+        type.paramTypes.some((p) => this.occursIn(typeVar, p)) ||
+        this.occursIn(typeVar, type.returnType)
+      );
+    }
+
+    if (type instanceof TupleType) {
+      return type.elementTypes.some((e) => this.occursIn(typeVar, e));
+    }
+
+    if (type instanceof RecordType) {
+      return Array.from(type.fields.values()).some((f) =>
+        this.occursIn(typeVar, f)
+      );
+    }
+
+    if (type instanceof AdtType) {
+      // An ADT doesn't contain type variables itself (in our simplified representation)
+      // Type vars might appear within the types of its *constructors*, but we handle that
+      // when unifying function types (constructor types). So an ADT doesn't "contain"
+      // the type var in the sense of the `occursIn` check.
+      return false;
+    }
+
+    // Primitives and UnknownType don't contain type vars
+    return false;
+  }
+
+  // Helper method to report errors
+  private reportError(message: string, context: ParserRuleContext): void {
+    this.errors.push({ message, context });
+  }
+
+  getConstructors(): ConstructorDefinition[] {
+    return this.constructors;
+  }
+
+  // Main entry point for type checking
+  check(ctx: parser.ProgramContext): {
+    errors: CompilationError[];
+    hints: TypeHintWithContext[];
+  } {
+    this.environment = new TypeEnvironment(null); // Reset to global scope
+    this.errors = []; // Reset errors
+    this.hints = []; // Reset hints
+    this.constructors = []; // Reset constructors
+
+    this.visitProgram(ctx);
+    return { errors: this.errors, hints: this.hints };
+  }
+
+  visitProgram(ctx: parser.ProgramContext): ChicoryType {
+    ctx.stmt().forEach((stmt) => this.visitStmt(stmt));
+    // Optionally handle exportStmt if needed
+    return UnitType; // Program itself doesn't have a type
+  }
+
+  visitStmt(ctx: parser.StmtContext): ChicoryType {
+    if (ctx.assignStmt()) {
+      return this.visitAssignStmt(ctx.assignStmt()!);
+    } else if (ctx.typeDefinition()) {
+      return this.visitTypeDefinition(ctx.typeDefinition()!);
+    } else if (ctx.importStmt()) {
+      return this.visitImportStmt(ctx.importStmt()!);
+    } else if (ctx.expr()) {
+      return this.visitExpr(ctx.expr()!);
+    }
+    this.reportError(`Unknown statement type: ${ctx.getText()}`, ctx);
+    return UnknownType;
+  }
+
+  visitAssignStmt(ctx: parser.AssignStmtContext): ChicoryType {
+    const identifierName = ctx.identifierWrapper()!.IDENTIFIER().getText();
+    const expressionType = this.visitExpr(ctx.expr());
     
-        ctx.adtOption().forEach(option => {
-            let constructorName: string;
-            let constructorContext: Token;
-            let paramTypes: Type[] = [];
+    // Apply any pending substitutions to the expression type
+    const substitution: SubstitutionMap = new Map();
+    const finalType = this.applySubstitution(expressionType, substitution);
     
-            // Handle different ADT option variants
-            if (option instanceof parser.AdtOptionAnonymousRecordContext) {
-                // Structure: IDENTIFIER( { ... } )
-                constructorName = option.IDENTIFIER().getText();
-                constructorContext = option.IDENTIFIER().symbol;
-                
-                // Process anonymous record fields
-                const fields = new Map<string, Type>();
-                option.adtTypeAnnotation().forEach(ann => {
-                    const fieldName = ann.IDENTIFIER()[0].getText();
-                    let fieldType: Type;
-                    if (ann.primitiveType()) {
-                        fieldType = this.visitPrimitiveType(ann.primitiveType()!) as Type;
-                    } else {
-                        const typeName = ann.IDENTIFIER()[1].getText();
-                        // Check if it's a type parameter
-                        if (typeParamScope.has(typeName)) {
-                            fieldType = typeParamScope.get(typeName)!;
-                        } else {
-                            fieldType = this.lookupType(typeName, ann);
-                        }
-                    }
-                    fields.set(fieldName, fieldType);
-                });
-                paramTypes.push({ kind: 'record', fields });
-            }
-            else if (option instanceof parser.AdtOptionNamedTypeContext) {
-                // Structure: IDENTIFIER( IDENTIFIER )
-                constructorName = option.IDENTIFIER()[0].getText();
-                constructorContext = option.IDENTIFIER()[0].symbol;
-                const paramTypeName = option.IDENTIFIER()[1].getText();
-                
-                // Check if it's a type parameter
-                if (typeParamScope.has(paramTypeName)) {
-                    paramTypes.push(typeParamScope.get(paramTypeName)!);
-                } else {
-                    paramTypes.push(this.lookupType(paramTypeName, option));
-                }
-            }
-            else if (option instanceof parser.AdtOptionPrimitiveTypeContext) {
-                // Structure: IDENTIFIER( primitiveType )
-                constructorName = option.IDENTIFIER().getText();
-                constructorContext = option.IDENTIFIER().symbol;
-                paramTypes.push(this.visitPrimitiveType(option.primitiveType()!) as Type);
-            }
-            else if (option instanceof parser.AdtOptionNoArgContext) {
-                // Structure: IDENTIFIER (no params)
-                constructorName = option.IDENTIFIER().getText();
-                constructorContext = option.IDENTIFIER().symbol;
-            }
-            else {
-                this.errors.push({ message: 'Unknown ADT variant', context: option });
-                return;
-            }
+    console.log(`[visitAssignStmt] Declaring ${identifierName} with type ${finalType}`);
     
-            constructors.push({
-                adtName: typeName,
-                name: constructorName,
-                type: { 
-                    kind: 'function', 
-                    params: paramTypes,
-                    return: adtType 
-                },
-                // TODO: give the more narrowly constrained context...
-                context: ctx
-            });
+    this.environment.declare(identifierName, finalType, ctx, (str) =>
+      this.reportError(str, ctx)
+    );
+    return finalType;
+  }
+
+  visitTypeDefinition(ctx: parser.TypeDefinitionContext): ChicoryType {
+    const typeName = ctx.IDENTIFIER().getText();
+    const type = this.visitTypeExpr(ctx.typeExpr(), typeName);
+
+    // Not doing full handling right now.
+    this.environment.declare(typeName, type, ctx, (str) =>
+      this.reportError(str, ctx)
+    );
+    return type;
+  }
+
+  private visitTypeExpr(
+    ctx: parser.TypeExprContext,
+    typeName?: string
+  ): ChicoryType {
+    if (ctx.adtType()) {
+      // This is a generic if the "ADT" is not already declared
+      const maybeAdtOption = ctx.adtType()?.adtOption();
+      if (
+        maybeAdtOption?.length === 1 &&
+        maybeAdtOption[0] instanceof parser.AdtOptionNoArgContext
+      ) {
+        const possibleGeneric = maybeAdtOption[0].IDENTIFIER().getText();
+        const isInEnvironment = this.environment.getType(possibleGeneric);
+        if (!isInEnvironment) {
+            console.log("Generic:", possibleGeneric)
+          return new GenericType(possibleGeneric, []);
+        }
+      }
+      // Otherwise, it's an ADT
+      return this.visitAdtType(ctx.adtType()!, typeName);
+    } else if (ctx.functionType()) {
+      return this.visitFunctionType(ctx.functionType()!);
+    } else if (ctx.genericTypeExpr()) {
+      return this.visitGenericTypeExpr(ctx.genericTypeExpr()!);
+    } else if (ctx.recordType()) {
+      return this.visitRecordType(ctx.recordType()!);
+    } else if (ctx.tupleType()) {
+      return this.visitTupleType(ctx.tupleType()!);
+    } else if (ctx.primitiveType()) {
+      return this.getPrimitiveType(ctx.primitiveType()!);
+    }
+
+    this.reportError(
+      `Type definition not fully supported yet: ${ctx.getText()}`,
+      ctx
+    );
+    return UnknownType; // For now
+  }
+
+  private visitGenericTypeExpr(
+    ctx: parser.GenericTypeExprContext
+  ): ChicoryType {
+    const typeName = ctx.IDENTIFIER().getText();
+    const typeArguments = ctx.typeExpr().map((e) => this.visitTypeExpr(e));
+    return new GenericType(typeName, typeArguments); // Assuming GenericType is similar to AdtType for now
+  }
+
+  private visitFunctionType(ctx: parser.FunctionTypeContext): ChicoryType {
+    const paramTypes = ctx.typeParam()
+      ? ctx.typeParam().map((p) => this.visitParameterType(p))
+      : [];
+    const returnType = this.visitTypeExpr(ctx.typeExpr());
+
+    return new FunctionType(paramTypes, returnType);
+  }
+
+  private visitParameterType(ctx: parser.TypeParamContext): ChicoryType {
+    if (ctx instanceof parser.NamedTypeParamContext) {
+      const existingType = this.environment.getType(ctx.IDENTIFIER().getText());
+      if (existingType) {
+        return existingType;
+      }
+      const typeVar = this.newTypeVar();
+      this.environment.declare(typeVar.name, typeVar, ctx, (str) =>
+        this.reportError(str, ctx)
+      );
+      return typeVar;
+    } else if (ctx instanceof parser.UnnamedTypeParamContext) {
+      return this.visitTypeExpr(ctx.typeExpr());
+    }
+
+    throw new Error(`Unknown parameter type: ${ctx.getText()}`);
+  }
+
+  private visitRecordType(ctx: parser.RecordTypeContext): ChicoryType {
+    const recordType = new RecordType(new Map());
+    ctx.recordTypeAnontation().forEach((kv) => {
+      let val: ChicoryType;
+      if (kv.primitiveType()) {
+        val = this.getPrimitiveType(kv.primitiveType()!);
+      } else if (kv.recordType()) {
+        val = this.visitRecordType(kv.recordType()!);
+      } else {
+        val =
+          this.environment.getType(kv.IDENTIFIER()[1].getText()) || UnknownType;
+      }
+
+      recordType.fields.set(kv.IDENTIFIER()[0].getText(), val);
+    });
+    return recordType;
+  }
+
+  private visitAdtType(
+    ctx: parser.AdtTypeContext,
+    typeName = "AnonymousADT"
+  ): ChicoryType {
+    const adtType = new AdtType(typeName);
+    // Declare the ADT type itself
+    // this.environment.declare(typeName, adtType, ctx, (str) =>
+    //   this.reportError(str, ctx)
+    // );
+
+    ctx.adtOption().forEach((option) => {
+      let constructorName: string;
+      let constructorType: ChicoryType;
+
+      if (option instanceof parser.AdtOptionAnonymousRecordContext) {
+        constructorName = option.IDENTIFIER().getText();
+
+        const recordType = new RecordType(new Map());
+        option.adtTypeAnnotation().forEach((annotation) => {
+          const fieldName = annotation.IDENTIFIER()[0].getText();
+          const fieldType = annotation.primitiveType()
+            ? this.getPrimitiveType(annotation.primitiveType()!)
+            : this.environment.getType(annotation.IDENTIFIER()[1].getText()) ||
+              UnknownType; // Handle type references
+          recordType.fields.set(fieldName, fieldType);
         });
+
+        // Constructor is a function that takes the record and returns the ADT
+        constructorType = new FunctionType(
+          [recordType],
+          adtType,
+          constructorName
+        );
+      } else if (option instanceof parser.AdtOptionNamedTypeContext) {
+        constructorName = option.IDENTIFIER()[0].getText();
+
+        const paramType =
+          this.environment.getType(option.IDENTIFIER()[1].getText()) ||
+          UnknownType; // Get the named type
+        constructorType = new FunctionType(
+          [paramType],
+          adtType,
+          constructorName
+        );
+      } else if (option instanceof parser.AdtOptionPrimitiveTypeContext) {
+        constructorName = option.IDENTIFIER().getText();
+
+        const paramType = this.getPrimitiveType(option.primitiveType()!);
+        constructorType = new FunctionType(
+          [paramType],
+          adtType,
+          constructorName
+        );
+      } else if (option instanceof parser.AdtOptionNoArgContext) {
+        constructorName = option.IDENTIFIER().getText();
+        constructorType = new FunctionType([], adtType, constructorName);
+      } else {
+        throw new Error(`Unknown adt option type: ${option.getText()}`);
+      }
+
+      this.constructors.push({
+        adtName: typeName,
+        name: constructorName,
+        type: constructorType,
+      });
+    });
+
+    return adtType;
+  }
+
+  private visitTupleType(ctx: parser.TupleTypeContext): ChicoryType {
+    return new TupleType(ctx.typeExpr().map((e) => this.visitTypeExpr(e)));
+  }
+
+  private getPrimitiveType(ctx: parser.PrimitiveTypeContext): ChicoryType {
+    if (ctx.getText() === "number") return NumberType;
+    if (ctx.getText() === "string") return StringType;
+    if (ctx.getText() === "boolean") return BooleanType;
+    if (ctx.getText() === "unit") return UnitType;
+    return UnknownType;
+  }
+
+  visitImportStmt(ctx: parser.ImportStmtContext): ChicoryType {
+    // Simplified handling for now - declare imported identifiers as UnknownType
+    if (ctx.IDENTIFIER()) {
+      this.environment.declare(
+        ctx.IDENTIFIER()!.getText(),
+        UnknownType,
+        ctx,
+        (str) => this.reportError(str, ctx)
+      );
+    }
+    if (ctx.destructuringImportIdentifier()) {
+      ctx
+        .destructuringImportIdentifier()!
+        .IDENTIFIER()
+        .forEach((id) => {
+          this.environment.declare(id.getText(), UnknownType, ctx, (str) =>
+            this.reportError(str, ctx)
+          );
+        });
+    }
+
+    if (ctx.bindingImportIdentifier()) {
+      ctx
+        .bindingImportIdentifier()!
+        .bindingIdentifier()
+        .forEach((binding) => {
+          // Should use the type but we aren't handling this yet
+          const typeName = binding.IDENTIFIER().getText();
+          const type = this.visitTypeExpr(binding.typeExpr());
+          this.environment.declare(typeName, type, ctx, (str) =>
+            this.reportError(str, ctx)
+          );
+        });
+    }
+    return UnitType;
+  }
+
+  visitExpr(ctx: parser.ExprContext): ChicoryType {
+    let primaryType = this.visitPrimaryExpr(ctx.primaryExpr());
+    for (const tailExpr of ctx.tailExpr()) {
+      primaryType = this.visitTailExpr(tailExpr, primaryType);
+    }
+    return primaryType;
+  }
+
+  visitTailExpr(
+    ctx: parser.TailExprContext,
+    baseType: ChicoryType
+  ): ChicoryType {
+    if (ctx.ruleContext instanceof parser.MemberExpressionContext) {
+      const memberName = (ctx as parser.MemberExpressionContext)
+        .IDENTIFIER()
+        .getText();
+      if (!(baseType instanceof RecordType)) {
+        this.reportError(
+          `Cannot access member '${memberName}' on type '${baseType}'`,
+          ctx
+        );
+        return UnknownType;
+      }
+      if (!baseType.fields.has(memberName)) {
+        this.reportError(
+          `Member '${memberName}' not found on type '${baseType}'`,
+          ctx
+        );
+        return UnknownType;
+      }
+      return baseType.fields.get(memberName)!;
+    } else if (ctx.ruleContext instanceof parser.IndexExpressionContext) {
+      const indexType = this.visitExpr(
+        (ctx as parser.IndexExpressionContext).expr()
+      );
+      if (!(baseType instanceof TupleType)) {
+        this.reportError(`Cannot index into type '${baseType}'`, ctx);
+        return UnknownType;
+      }
+      if (indexType !== NumberType) {
+        this.reportError(`Index must be a number`, ctx);
+        return UnknownType;
+      }
+
+      // Try to evaluate the index if it's a literal
+      const indexExpr = (ctx as parser.IndexExpressionContext).expr().primaryExpr();
+      if (indexExpr instanceof parser.LiteralExpressionContext) {
+        const indexValue = parseInt(indexExpr.getText());
+        if (
+          !isNaN(indexValue) &&
+          indexValue >= 0 &&
+          indexValue < baseType.elementTypes.length
+        ) {
+          // Return the element type at the specified index
+          return baseType.elementTypes[indexValue];
+        }
+        else {
+            this.reportError("Tuple index out of range", ctx);
+            return UnknownType;
+        }
+      }
+
+      // If we can't determine the exact index, return UnknownType
+      // This is safer than assuming it's the first element
+      this.reportError(`Cannot determine index at compile time`, ctx);
+      return UnknownType;
+    } else if (ctx.ruleContext instanceof parser.CallExpressionContext) {
+      return this.visitCallExpr(
+        (ctx as parser.CallExpressionContext).callExpr(),
+        baseType
+      ); // Pass baseType
+    } else if (ctx.ruleContext instanceof parser.OperationExpressionContext) {
+      return this.visitOperation(
+        ctx as parser.OperationExpressionContext,
+        baseType
+      );
+    }
+
+    this.reportError(`Unknown tail expression type: ${ctx.getText()}`, ctx);
+    return UnknownType;
+  }
+
+  visitOperation(
+    ctx: parser.OperationExpressionContext,
+    baseType: ChicoryType
+  ): ChicoryType {
+    const operator = ctx.OPERATOR().getText();
+    const rhsType = this.visitExpr(ctx.expr());
+
+    switch (operator) {
+      case "+":
+        if (baseType === NumberType && rhsType === NumberType) {
+          return NumberType;
+        } else if (baseType === StringType && rhsType === StringType) {
+          return StringType;
+        } else {
+          this.reportError(
+            `Operator '+' cannot be applied to types '${baseType}' and '${rhsType}'`,
+            ctx
+          );
+          return UnknownType;
+        }
+      case "-":
+      case "*":
+      case "/":
+        if (baseType === NumberType && rhsType === NumberType) {
+          return NumberType;
+        } else {
+          this.reportError(
+            `Operator '${operator}' cannot be applied to types '${baseType}' and '${rhsType}'`,
+            ctx
+          );
+          return UnknownType;
+        }
+      case "==":
+      case "!=":
+      case "<":
+      case ">":
+      case "<=":
+      case ">=":
+        // Basic compatibility check
+        if (
+          (baseType === NumberType && rhsType === NumberType) ||
+          (baseType === StringType && rhsType === StringType) ||
+          (baseType === BooleanType && rhsType === BooleanType)
+        ) {
+          return BooleanType;
+        } else {
+          this.reportError(
+            `Operator '${operator}' cannot be applied to types '${baseType}' and '${rhsType}'`,
+            ctx
+          );
+          return UnknownType;
+        }
+
+      case "&&":
+      case "||":
+        if (baseType === BooleanType && rhsType === BooleanType) {
+          return BooleanType;
+        } else {
+          this.reportError(
+            `Operator '${operator}' cannot be applied to types '${baseType}' and '${rhsType}'`,
+            ctx
+          );
+          return UnknownType;
+        }
+      default:
+        this.reportError(`Unsupported operator: ${operator}`, ctx);
+        return UnknownType;
+    }
+  }
+
+  visitPrimaryExpr(ctx: parser.PrimaryExprContext): ChicoryType {
+    if (ctx instanceof parser.IdentifierExpressionContext) {
+      return this.visitIdentifier(ctx);
+    } else if (ctx instanceof parser.LiteralExpressionContext) {
+      return this.visitLiteral(ctx.literal());
+    } else if (ctx instanceof parser.ParenExpressionContext) {
+      return this.visitExpr(ctx.expr());
+    } else if (ctx instanceof parser.RecordExpressionContext) {
+      return this.visitRecordExpr(ctx.recordExpr());
+    } else if (ctx instanceof parser.ArrayLikeExpressionContext) {
+      return this.visitArrayLikeExpr(ctx.arrayLikeExpr());
+    } else if (ctx instanceof parser.BlockExpressionContext) {
+      return this.visitBlockExpr(ctx.blockExpr());
+    } else if (ctx instanceof parser.IfExpressionContext) {
+      return this.visitIfExpr(ctx.ifExpr());
+    } else if (ctx instanceof parser.FunctionExpressionContext) {
+      return this.visitFuncExpr(ctx.funcExpr());
+    } else if (ctx instanceof parser.MatchExpressionContext) {
+      return this.visitMatchExpr(ctx.matchExpr());
+    } else if (ctx instanceof parser.JsxExpressionContext) {
+      return this.visitJsxExpr(ctx.jsxExpr());
+    }
+
+    this.reportError(`Unknown primary expression type: ${ctx.getText()}`, ctx);
+    return UnknownType;
+  }
+
+  visitIdentifier(ctx: parser.IdentifierExpressionContext): ChicoryType {
+    const identifierName = ctx.IDENTIFIER().getText();
+    console.log(`[visitIdentifier] Processing identifier: ${identifierName}`);
+
+    const type = this.environment.getType(identifierName);
+    if (type) {
+      console.log(
+        `[visitIdentifier] Found type in environment for ${identifierName}: ${type}`
+      );
+      this.hints.push({ context: ctx, type: type.toString() });
+      return type;
+    }
+
+    // Check if this is an ADT constructor
+    const constructor = this.getConstructors().find(
+      (c) => c.name === identifierName
+    );
+    if (constructor) {
+      console.log(`[visitIdentifier] Found constructor: ${identifierName}`);
+      console.log(`[visitIdentifier] Constructor Name: ${constructor.name}`);
+      console.log(
+        `[visitIdentifier] Constructor ADT Name: ${constructor.adtName}`
+      );
+      console.log(
+        `[visitIdentifier] Constructor Type (FunctionType): ${constructor.type}`
+      );
+      this.hints.push({ context: ctx, type: constructor.type.toString() });
+      
+      // Special case for no-argument constructors
+      if (constructor.type instanceof FunctionType && constructor.type.paramTypes.length === 0) {
+        // For no-argument constructors, return the ADT type instead of the constructor type
+        console.log(`[visitIdentifier] No-argument constructor, returning ADT type: ${constructor.adtName}`);
+        return new AdtType(constructor.adtName);
+      }
+      
+      // For constructors with arguments, return the constructor type
+      return constructor.type;
+    } else {
+      console.log(
+        `[visitIdentifier] Constructor NOT found for: ${identifierName}`
+      );
+    }
+
+    this.reportError(`Identifier '${identifierName}' is not defined.`, ctx);
+    return UnknownType;
+  }
+
+  visitLiteral(ctx: parser.LiteralContext): ChicoryType {
+    const content = ctx.getText();
+    if (content === "true" || content === "false") {
+      return BooleanType;
+    } else if (Number.isFinite(Number(content))) {
+      return NumberType;
+    } else {
+      return StringType;
+    }
+
+    throw new Error(`Unknown literal type: ${content}`);
+    // Add unit literal handling if needed
+    return UnknownType;
+  }
+
+  visitRecordExpr(ctx: parser.RecordExprContext): ChicoryType {
+    const fields = new Map<string, ChicoryType>();
+    ctx.recordKvExpr().forEach((kv) => {
+      const key = kv.IDENTIFIER().getText();
+      const valueType = this.visitExpr(kv.expr());
+      fields.set(key, valueType);
+    });
     
-        return { kind: 'adt', constructors };
+    // Add a hint for debugging
+    const recordType = new RecordType(fields);
+    console.log(`[visitRecordExpr] Created record type: ${recordType}`);
+    this.hints.push({ context: ctx, type: recordType.toString() });
+    
+    return recordType;
+  }
+
+  visitArrayLikeExpr(ctx: parser.ArrayLikeExprContext): ChicoryType {
+    const elementTypes = ctx.expr().map((expr) => this.visitExpr(expr));
+    if (elementTypes.length === 0) {
+      return new TupleType([]); // Empty tuple
+    }
+    // Basic homogeneous array check for now
+    const firstElementType = elementTypes[0];
+    for (let i = 1; i < elementTypes.length; i++) {
+      if (elementTypes[i] !== firstElementType) {
+        this.reportError(
+          `Array elements must have the same type. Expected '${firstElementType}', found '${elementTypes[i]}'`,
+          ctx.expr()[i]
+        );
+        //  return new ArrayType(UnknownType); // Or some other error handling
+      }
     }
 
-    private visitAdtOption(ctx: parser.AdtOptionContext): Type {
-        if (ctx instanceof parser.AdtOptionAnonymousRecordContext) {
-            const fields = new Map<string, Type>();
-            ctx.adtTypeAnnotation().forEach(ann => {
-                const name = ann.IDENTIFIER()[0].getText();
-                const type = ann.primitiveType() ? this.visitPrimitiveType(ann.primitiveType()!) as Type : this.lookupType(ann.IDENTIFIER()[1].getText(), ann);
-                fields.set(name, type);
-            });
-            return { kind: 'record', fields };
-        } else if (ctx instanceof parser.AdtOptionNamedTypeContext) {
-            const typeName = ctx.IDENTIFIER()[1].getText();
-            return this.lookupType(typeName, ctx);
-        } else if (ctx instanceof parser.AdtOptionPrimitiveTypeContext) {
-            return this.visitPrimitiveType(ctx.primitiveType()!) as Type;
+    return new TupleType(elementTypes);
+  }
+
+  visitBlockExpr(ctx: parser.BlockExprContext): ChicoryType {
+    this.environment = this.environment.pushScope(); // Push a new scope
+    ctx.stmt().forEach((stmt) => this.visitStmt(stmt));
+    const blockType = this.visitExpr(ctx.expr());
+    this.environment = this.environment.popScope()!; // Pop the scope
+    return blockType;
+  }
+
+  visitIfExpr(ctx: parser.IfExprContext): ChicoryType {
+    const conditionType = this.visitExpr(ctx.justIfExpr()[0].expr()[0]);
+
+    if (conditionType !== BooleanType) {
+      this.reportError(
+        `Condition of if expression must be boolean, but got '${conditionType}'`,
+        ctx.justIfExpr()[0].expr()[0]
+      );
+    }
+
+    const thenType = this.visitExpr(ctx.justIfExpr()[0].expr()[1]);
+
+    // Check 'else if' branches
+    for (let i = 1; i < ctx.justIfExpr().length; i++) {
+      const elseIfConditionType = this.visitExpr(ctx.justIfExpr()[i].expr()[0]);
+      if (elseIfConditionType !== BooleanType) {
+        this.reportError(
+          `Condition of else if expression must be boolean, but got '${elseIfConditionType}'`,
+          ctx.justIfExpr()[i].expr()[0]
+        );
+      }
+      // Note: We are not requiring same types for all branches
+      this.visitExpr(ctx.justIfExpr()[i].expr()[1]);
+    }
+
+    if (ctx.expr()) {
+      // Note: We are not requiring same types
+      return this.visitExpr(ctx.expr()!);
+    }
+
+    return thenType;
+  }
+
+  visitFuncExpr(ctx: parser.FuncExprContext): ChicoryType {
+    this.environment = this.environment.pushScope(); // Push a new scope for function parameters
+
+    const paramTypes: ChicoryType[] = [];
+    if (ctx.parameterList()) {
+      ctx
+        .parameterList()!
+        .IDENTIFIER()
+        .forEach((param) => {
+          // For now, declare params as UnknownType; we're not handling explicit type annotations on params yet.
+          const paramName = param.getText();
+          // TODO: Fix the scoping of this context (probably need to wrap param in .g4 or something)
+          // this.environment.declare(paramName, UnknownType, param, (str) => this.reportError(str, param));
+          this.environment.declare(paramName, UnknownType, ctx, (str) =>
+            this.reportError(str, ctx)
+          );
+          paramTypes.push(UnknownType);
+        });
+    }
+
+    const returnType = this.visitExpr(ctx.expr());
+    this.environment = this.environment.popScope()!; // Pop the function scope
+    return new FunctionType(paramTypes, returnType);
+  }
+
+  visitCallExpr(
+    ctx: parser.CallExprContext,
+    functionType: ChicoryType
+  ): ChicoryType {
+    // Add debug logging
+    console.log(`[visitCallExpr] Function type: ${functionType}`);
+    
+    if (
+      !(functionType instanceof FunctionType) &&
+      !(functionType instanceof GenericType)
+    ) {
+      this.reportError(
+        `Cannot call a non-function type: '${functionType}'`,
+        ctx
+      );
+      return UnknownType;
+    }
+
+    const argumentTypes = ctx.expr()
+      ? ctx.expr().map((expr) => this.visitExpr(expr))
+      : [];
+    
+    // Add debug logging
+    console.log(`[visitCallExpr] Argument types: ${argumentTypes.map(t => t.toString()).join(', ')}`);
+    
+    let expectedParamTypes: ChicoryType[] = [];
+    let returnType: ChicoryType = UnknownType;
+
+    if (functionType instanceof FunctionType) {
+      expectedParamTypes = functionType.paramTypes;
+      returnType = functionType.returnType;
+      console.log(`[visitCallExpr] Expected param types: ${expectedParamTypes.map(t => t.toString()).join(', ')}`);
+      console.log(`[visitCallExpr] Return type before substitution: ${returnType}`);
+    } else if (functionType instanceof GenericType) {
+      // 1. Lookup the generic type def (e..g, from a bind stmt). For now let's assume a simple case.
+      //  Ideally, we'd have a way to store and retrieve bound types from import stmts.
+      // Maybe we have a function `getBoundType` that does this
+      // const boundType = this.getBoudType(functionType.name);
+      throw new Error("Not implemented generic type call expressions yet...");
+    }
+
+    const substitution: SubstitutionMap = new Map();
+
+    // unify argument types with parameter types
+    if (argumentTypes.length !== expectedParamTypes.length) {
+      this.reportError(
+        `Expected ${expectedParamTypes.length} arguments, but got ${argumentTypes.length}`,
+        ctx
+      );
+    } else {
+      for (let i = 0; i < argumentTypes.length; i++) {
+        console.log(`[visitCallExpr] Unifying param ${i}: ${expectedParamTypes[i]} with arg: ${argumentTypes[i]}`);
+        const result = this.unify(
+          expectedParamTypes[i],
+          argumentTypes[i],
+          substitution
+        );
+        if (result instanceof Error) {
+          this.reportError(
+            `Argument ${i + 1} type mismatch: ${result.message}`,
+            ctx
+          );
         } else {
-            return this.freshVar();
+          console.log(`[visitCallExpr] Unified result for param ${i}: ${result}`);
         }
+      }
     }
 
-    private visitRecordType(ctx: parser.RecordTypeContext, typeParamScope: Map<string, Type> = new Map()): TypeDef {
-        const fields = new Map<string, Type>();
-        ctx.recordTypeAnontation().forEach(ann => {
-            const name = ann.IDENTIFIER()[0].getText();
-            let type: Type;
-            if (ann.primitiveType()) {
-                type = this.visitPrimitiveType(ann.primitiveType()!) as Type;
-            } else if (ann.recordType()) {
-                type = this.visitRecordType(ann.recordType()!, typeParamScope) as Type;
-            } else {
-                const typeName = ann.IDENTIFIER()[1].getText();
-                // Check if it's a type parameter
-                if (typeParamScope.has(typeName)) {
-                    type = typeParamScope.get(typeName)!;
-                } else {
-                    type = this.lookupType(typeName, ann);
-                }
-            }
-            fields.set(name, type);
-        });
-        return { kind: 'record', fields };
+    returnType = this.applySubstitution(returnType, substitution);
+    
+    // Add a hint for debugging
+    console.log(`[visitCallExpr] Return type after substitution: ${returnType}`);
+    this.hints.push({ context: ctx, type: returnType.toString() });
+    
+    return returnType;
+  }
+
+  visitMatchExpr(ctx: parser.MatchExprContext): ChicoryType {
+    const matchedType = this.visitExpr(ctx.expr());
+    let returnTypes: ChicoryType[] = [];
+
+    ctx.matchArm().forEach((arm) => {
+      returnTypes.push(this.visitMatchArm(arm, matchedType));
+    });
+
+    // Check that all arms return the same type
+    const firstType = returnTypes[0] || UnknownType;
+    for (let i = 1; i < returnTypes.length; i++) {
+      if (!typesAreEqual(firstType, returnTypes[i])) {
+        this.reportError(
+          `Match arms must all return the same type. Expected '${firstType}', found '${returnTypes[i]}'`,
+          ctx.matchArm()[i]
+        );
+        return UnknownType;
+      }
     }
 
-    private visitTupleType(ctx: parser.TupleTypeContext, typeParamScope: Map<string, Type> = new Map()): TypeDef {
-        const elements: Type[] = [];
-        
-        // Process each type expression in the tuple
-        for (const typeExpr of ctx.typeExpr()) {
-            const typeText = typeExpr.getText();
-            
-            // Check if it's a direct reference to a type parameter
-            if (typeText && typeParamScope.has(typeText)) {
-                elements.push(typeParamScope.get(typeText)!);
-            } else {
-                const typeDef = this.visitTypeExpr(typeExpr, undefined, Array.from(typeParamScope.keys()));
-                elements.push(this.typeDefToType(typeDef, ''));
-            }
-        }
-        
-        return { kind: 'tuple', elements };
-    }
+    return firstType;
+  }
 
-    private visitPrimitiveType(ctx: parser.PrimitiveTypeContext): TypeDef {
-        const name = ctx.getText() as 'number' | 'string' | 'boolean' | 'unit';
-        return { kind: 'primitive', name };
-    }
+  visitMatchArm(
+    ctx: parser.MatchArmContext,
+    matchedType: ChicoryType
+  ): ChicoryType {
+    this.environment = this.environment.pushScope();
+    this.visitPattern(ctx.matchPattern(), matchedType); // Check pattern and declare any variables
+    const armExprType = this.visitExpr(ctx.expr());
+    this.environment = this.environment.popScope();
+    return armExprType;
+  }
 
-    private findParentOfType<T extends ParserRuleContext>(ctx: ParserRuleContext, type: any): T | null {
-        let current = ctx.parent;
-        while (current) {
-            if (current instanceof type) {
-                return current as T;
-            }
-            current = current.parent;
-        }
-        return null;
-    }
+  visitPattern(
+    ctx: parser.MatchPatternContext,
+    matchedType: ChicoryType
+  ): void {
+    const substitution: SubstitutionMap = new Map();
+    matchedType = this.applySubstitution(matchedType, substitution);
 
-    private lookupType(typeName: string, context: ParserRuleContext): Type {
-        // Check if it's a single uppercase letter (potential type parameter)
-        if (typeName.length === 1 && /[A-Z]/.test(typeName)) {
-            return { kind: 'typeParam', name: typeName };
-        }
-        
-        // Check if we're in a function type context
-        const functionTypeCtx = this.findParentOfType(context, parser.FunctionTypeContext);
-        if (functionTypeCtx) {
-            // We're inside a function type, so this might be a type parameter
-            return { kind: 'typeParam', name: typeName };
-        }
-        
-        const typeDefEntry = this.typeDefs.get(typeName);
-        if (!typeDefEntry) {
-            this.errors.push({ message: `Undefined type ${typeName}`, context });
-            return this.freshVar();
-        }
-        const typeDef = typeDefEntry.def;
-        switch (typeDef.kind) {
-            case 'primitive': 
-                if (typeDef.name === 'typeParam' ) {
-                    if (!typeDef.typeParam) {
-                        this.errors.push({ message: `Type parameter ${typeName} is not defined`, context });
-                        return this.freshVar();
-                    }
-                    return { kind: 'typeParam', name: typeDef.typeParam };
-                }
-                return { kind: 'primitive', name: typeDef.name };
-            case 'record': return { kind: 'record', fields: typeDef.fields };
-            case 'tuple': return { kind: 'tuple', elements: typeDef.elements };
-            case 'adt': return { kind: 'adt', name: typeName };
-            case 'function': return { kind: 'function', params: typeDef.params, return: typeDef.return };
-            case 'generic': return { kind: 'generic', base: typeDef.base, typeArgs: typeDef.typeArgs };
-            default: return this.freshVar();
-        }
-    }
-
-    private visitExpr(ctx: parser.ExprContext): Type {
-        let currentType = this.visitPrimaryExpr(ctx.primaryExpr());
-        ctx.tailExpr().forEach(tail => {
-            currentType = this.visitTailExpr(tail, currentType);
-        });
-        
-        // Add type hint for the entire expression
-        this.addTypeHint(ctx, currentType);
-        
-        return currentType;
-    }
-
-    private visitPrimaryExpr(ctx: parser.PrimaryExprContext): Type {
-        if (ctx instanceof parser.IfExpressionContext) return this.visitIfExpr(ctx.ifExpr());
-        if (ctx instanceof parser.FunctionExpressionContext) return this.visitFuncExpr(ctx.funcExpr());
-        if (ctx instanceof parser.MatchExpressionContext) return this.visitMatchExpr(ctx.matchExpr());
-        if (ctx instanceof parser.BlockExpressionContext) return this.visitBlockExpr(ctx.blockExpr());
-        if (ctx instanceof parser.RecordExpressionContext) return this.visitRecordExpr(ctx.recordExpr());
-        if (ctx instanceof parser.ArrayLikeExpressionContext) return this.visitArrayLikeExpr(ctx.arrayLikeExpr());
-        if (ctx instanceof parser.IdentifierExpressionContext) return this.visitIdentifier(ctx);
-        if (ctx instanceof parser.LiteralExpressionContext) return this.visitLiteral(ctx.literal());
-        if (ctx instanceof parser.ParenExpressionContext) return this.visitExpr(ctx.expr());
-        if (ctx instanceof parser.JsxExpressionContext) return this.visitJsxExpr(ctx.jsxExpr());
-        this.errors.push({ message: 'Unknown primary expression', context: ctx });
-        return this.freshVar();
-    }
-
-    private visitTailExpr(ctx: parser.TailExprContext, currentType: Type): Type {
-        if (ctx instanceof parser.MemberExpressionContext) {
-            const memberName = ctx.IDENTIFIER().getText();
-            const resolved = this.resolve(currentType);
-            if (resolved.kind !== 'record') {
-                this.errors.push({ message: `Cannot access member ${memberName} of non-record`, context: ctx });
-                return this.freshVar();
-            }
-            const fieldType = resolved.fields.get(memberName);
-            if (!fieldType) {
-                this.errors.push({ message: `Record has no member ${memberName}`, context: ctx });
-                return this.freshVar();
-            }
-            return fieldType;
-        } else if (ctx instanceof parser.IndexExpressionContext) {
-            const indexType = this.visitExpr(ctx.expr());
-            this.unify(indexType, { kind: 'primitive', name: 'number' }, ctx);
-            const resolved = this.resolve(currentType);
-            if (resolved.kind !== 'tuple') {
-                this.errors.push({ message: 'Cannot index non-tuple type', context: ctx });
-                return this.freshVar();
-            }
-            return this.freshVar(); // Tuple index type cannot be inferred without literal index
-        } else if (ctx instanceof parser.CallExpressionContext) {
-            const args = ctx.callExpr().expr().map(arg => this.visitExpr(arg));
-            
-            // Special case for ADT constructors
-            const resolvedCurrentType = this.resolve(currentType);
-            if (resolvedCurrentType.kind === 'function' && 
-                resolvedCurrentType.return.kind === 'adt') {
-                // This is an ADT constructor - check if args match
-                if (resolvedCurrentType.params.length === args.length) {
-                    // For each parameter, try to unify but don't report errors
-                    const originalErrors = [...this.errors];
-                    let unificationFailed = false;
-                    
-                    try {
-                        resolvedCurrentType.params.forEach((paramType, i) => {
-                            try {
-                                this.unify(paramType, args[i], ctx);
-                            } catch (e) {
-                                unificationFailed = true;
-                            }
-                        });
-                    } catch (e) {
-                        unificationFailed = true;
-                    }
-                    
-                    // Restore original errors if unification failed
-                    if (unificationFailed) {
-                        this.errors = originalErrors;
-                    }
-                    
-                    // Return the ADT type regardless
-                    return resolvedCurrentType.return;
-                }
-            }
-            
-            // Handle generic functions with type parameters
-            if (resolvedCurrentType.kind === 'function' && 
-                (resolvedCurrentType.params.some(p => p.kind === 'typeParam') ||
-                 resolvedCurrentType.return.kind === 'typeParam')) {
-                // This is a generic function, so we need to be more lenient with type checking
-                
-                // Try to match the argument types with the parameter types
-                const originalErrors = [...this.errors];
-                let unificationFailed = false;
-                
-                try {
-                    // Only try to unify if parameter count matches
-                    if (resolvedCurrentType.params.length === args.length) {
-                        resolvedCurrentType.params.forEach((paramType, i) => {
-                            try {
-                                // For type parameters, we don't need strict unification
-                                if (paramType.kind !== 'typeParam') {
-                                    this.unify(paramType, args[i], ctx);
-                                }
-                            } catch (e) {
-                                unificationFailed = true;
-                            }
-                        });
-                    }
-                } catch (e) {
-                    unificationFailed = true;
-                }
-                
-                // Restore original errors if unification failed
-                if (unificationFailed) {
-                    this.errors = originalErrors;
-                }
-                
-                return resolvedCurrentType.return;
-            }
-            
-            const returnType = this.freshVar();
-            this.unify(currentType, { kind: 'function', params: args, return: returnType }, ctx);
-            return returnType;
-        } else if (ctx instanceof parser.OperationExpressionContext) {
-            const rightType = this.visitExpr(ctx.expr());
-            return this.visitOperator(ctx.OPERATOR().getText(), currentType, rightType, ctx);
+    if (ctx.ruleContext instanceof parser.BareAdtMatchPatternContext) {
+      const adtName = (ctx as parser.BareAdtMatchPatternContext)
+        .IDENTIFIER()
+        .getText();
+      // Check if matchedType is an ADT, a type variable, or a generic type
+      if (
+        !(matchedType instanceof AdtType) && 
+        !(matchedType instanceof TypeVariable) && 
+        !(matchedType instanceof GenericType)
+      ) {
+        // Add specific error for function types
+        if (matchedType instanceof FunctionType) {
+          this.reportError(
+            `Cannot match a function of type '${matchedType}' against ADT pattern '${adtName}'. Did you mean to match against the function's return value?`,
+            ctx
+          );
         } else {
-            this.errors.push({ message: 'Unknown tail expression', context: ctx });
-            return this.freshVar();
+          this.reportError(
+            `Cannot match a value of type '${matchedType}' against ADT pattern '${adtName}'`,
+            ctx
+          );
         }
+        return;
+      }
+
+      // If it's a type variable or generic type, we can't check the constructor at compile time
+      if (
+        matchedType instanceof TypeVariable || 
+        (matchedType instanceof GenericType && matchedType.typeArguments.length === 0)
+      ) {
+        // Just assume it's valid for now
+        return;
+      }
+
+      console.log("type???:", matchedType)
+      // Check if the constructor exists for this ADT
+      const constructor = this.constructors.find(
+        (c) => c.name === adtName && c.adtName === matchedType?.name
+      );
+      if (!constructor) {
+        this.reportError(
+          `Constructor ${adtName} does not exist on type ${matchedType?.name}`,
+          ctx
+        );
+      }
+    } else if (
+      ctx.ruleContext instanceof parser.AdtWithParamMatchPatternContext
+    ) {
+      const [adtName, paramName] = (
+        ctx as parser.AdtWithParamMatchPatternContext
+      )
+        .IDENTIFIER()
+        .map((id) => id.getText());
+
+      if (!(matchedType instanceof AdtType)) {
+        this.reportError(
+          `Cannot match a value of type '${matchedType}' against ADT pattern '${adtName}'`,
+          ctx
+        );
+        return;
+      }
+
+      // Find constructor.
+      const constructor = this.constructors.find(
+        (c) => c.name === adtName && c.adtName === matchedType.name
+      );
+
+      if (!constructor) {
+        this.reportError(
+          `Constructor ${adtName} does not exist on on type ${matchedType.name}`,
+          ctx
+        );
+        return;
+      }
+
+      const constructorType = constructor.type;
+
+      if (!(constructorType instanceof FunctionType)) {
+        this.reportError(
+          `Constructor ${adtName} does not take a parameter on on type ${matchedType.name}`,
+          ctx
+        );
+        return;
+      }
+
+      // Declare the parameter (we are inferring the type).
+      this.environment.declare(
+        paramName,
+        constructorType.paramTypes[0],
+        ctx,
+        (str) => this.reportError(str, ctx)
+      );
+    } else if (
+      ctx.ruleContext instanceof parser.AdtWithLiteralMatchPatternContext
+    ) {
+      const adtName = (ctx as parser.AdtWithLiteralMatchPatternContext)
+        .IDENTIFIER()
+        .getText();
+      if (!(matchedType instanceof AdtType)) {
+        this.reportError(
+          `Cannot match a value of type '${matchedType}' against ADT pattern '${adtName}'`,
+          ctx
+        );
+        return;
+      }
+
+      // Find constructor.
+      const constructor = this.constructors.find(
+        (c) => c.name === adtName && c.adtName === matchedType.name
+      );
+
+      if (!constructor) {
+        this.reportError(
+          `Constructor ${adtName} does not exist on on type ${matchedType.name}`,
+          ctx
+        );
+        return;
+      }
+
+      const constructorType = constructor.type;
+
+      if (!(constructorType instanceof FunctionType)) {
+        this.reportError(
+          `Constructor ${adtName} does not take a parameter on on type ${matchedType.name}`,
+          ctx
+        );
+        return;
+      }
+
+      const literalType = this.visitLiteral(
+        (ctx as parser.AdtWithLiteralMatchPatternContext).literal()
+      );
+
+      if (constructorType.paramTypes[0] !== literalType) {
+        this.reportError(`Incorrect literal type`, ctx);
+      }
+    } else if (ctx.ruleContext instanceof parser.WildcardMatchPatternContext) {
+      // Always matches
+    } else if (ctx.ruleContext instanceof parser.LiteralMatchPatternContext) {
+      const literalType = this.visitLiteral(
+        (ctx as parser.LiteralMatchPatternContext).literal()
+      );
+      
+      // Check if the matched type is compatible with the literal type
+      const result = this.unify(matchedType, literalType, new Map());
+      if (result instanceof Error) {
+        this.reportError(
+          `Cannot match a literal of type '${literalType}' against a value of type '${matchedType}'`,
+          ctx
+        );
+      }
     }
+  }
 
-    private visitOperator(op: string, left: Type, right: Type, ctx: ParserRuleContext): Type {
-        switch (op) {
-            case '+':
-                // Handle string concatenation or number addition
-                const resolvedLeft = this.resolve(left);
-                const resolvedRight = this.resolve(right);
-                
-                if (resolvedLeft.kind === 'primitive' && resolvedLeft.name === 'string') {
-                    // If left is string, right must be string too
-                    this.unify(right, { kind: 'primitive', name: 'string' }, ctx);
-                    return { kind: 'primitive', name: 'string' };
-                } else if (resolvedRight.kind === 'primitive' && resolvedRight.name === 'string') {
-                    // If right is string, left must be string too
-                    this.unify(left, { kind: 'primitive', name: 'string' }, ctx);
-                    return { kind: 'primitive', name: 'string' };
-                } else {
-                    // Default to number addition
-                    this.unify(left, { kind: 'primitive', name: 'number' }, ctx);
-                    this.unify(right, { kind: 'primitive', name: 'number' }, ctx);
-                    return { kind: 'primitive', name: 'number' };
-                }
-            case '-': case '*': case '/':
-                this.unify(left, { kind: 'primitive', name: 'number' }, ctx);
-                this.unify(right, { kind: 'primitive', name: 'number' }, ctx);
-                return { kind: 'primitive', name: 'number' };
-            case '==': case '!=':
-                this.unify(left, right, ctx);
-                return { kind: 'primitive', name: 'boolean' };
-            case '&&': case '||':
-                this.unify(left, { kind: 'primitive', name: 'boolean' }, ctx);
-                this.unify(right, { kind: 'primitive', name: 'boolean' }, ctx);
-                return { kind: 'primitive', name: 'boolean' };
-            default:
-                this.errors.push({ message: `Unsupported operator ${op}`, context: ctx });
-                return this.freshVar();
-        }
-    }
+  visitJsxExpr(ctx: parser.JsxExprContext): ChicoryType {
+    // For now we will treat all JSX as untyped
+    return UnknownType;
+  }
 
-    private visitIfExpr(ctx: parser.IfExprContext): Type {
-        const resultType = this.freshVar();
-        ctx.justIfExpr().forEach(justIfExpr => {
-            const condType = this.visitExpr(justIfExpr.expr()[0]);
-            this.unify(condType, { kind: 'primitive', name: 'boolean' }, justIfExpr);
-            const thenType = this.visitExpr(justIfExpr.expr()[1]);
-            this.unify(thenType, resultType, justIfExpr);
-        });
-        if (ctx.expr()) {
-            const elseType = this.visitExpr(ctx.expr()!);
-            this.unify(elseType, resultType, ctx);
-        }
-        return resultType;
-    }
+  // You *could* override visit methods you don't need, but it's not strictly necessary.
+  // The base visitor will provide default (empty) implementations.
 
-    private visitFuncExpr(ctx: parser.FuncExprContext): Type {
-        this.enterScope();
-        const params = ctx.parameterList()?.IDENTIFIER().map(id => ({
-            name: id.getText(),
-            context: id
-        })) || [];
-        const paramTypes = params.map(() => this.freshVar());
-        params.forEach((param, i) => {
-            // TODO: more narrowly constrain ctx to identifier (but it's a terminal node, so it doesn't have a ctx)
-            this.currentEnv[this.currentEnv.length - 1].set(param.name, { type: paramTypes[i], context: ctx });
-            this.symbols.push({
-                name: param.name,
-                type: paramTypes[i],
-                context: ctx,
-                kind: 'parameter'
-            });
-        });
-        const bodyType = this.visitExpr(ctx.expr());
-        this.exitScope();
-        
-        const funcType = { kind: 'function', params: paramTypes, return: bodyType } as Type;
-        
-        // Add type hint for the function expression
-        this.addTypeHint(ctx, funcType);
-        
-        return funcType;
-    }
-
-    private visitMatchExpr(ctx: parser.MatchExprContext): Type {
-        const matchedType = this.visitExpr(ctx.expr());
-        const resolvedType = this.resolve(matchedType);
-
-        if (resolvedType.kind !== 'adt') {
-            this.errors.push({ message: 'Match expression must be applied to an ADT type', context: ctx.expr() });
-            return this.freshVar();
-        }
-
-        const adtDef = this.typeDefs.get(resolvedType.name)?.def;
-        if (!adtDef || adtDef.kind !== 'adt') {
-            this.errors.push({ message: `ADT ${resolvedType.name} is not defined`, context: ctx.expr() });
-            return this.freshVar();
-        }
-
-        const resultType = this.freshVar();
-        ctx.matchArm().forEach(arm => {
-            const patternCtx = arm.matchPattern();
-            this.enterScope();
-            this.visitMatchPattern(patternCtx, resolvedType.name, adtDef);
-            const armType = this.visitExpr(arm.expr());
-            this.unify(armType, resultType, arm);
-            this.exitScope();
-        });
-
-        return resultType;
-    }
-
-    private visitMatchPattern(ctx: parser.MatchPatternContext, adtName: string, adtDef: TypeDef): void {
-        if (adtDef.kind !== 'adt') return;
-
-        if (ctx instanceof parser.BareAdtMatchPatternContext) {
-            const constructorName = ctx.IDENTIFIER().getText();
-            const constructor = this.constructorMap.get(constructorName);
-            if (!constructor || constructor.adtName !== adtName) {
-                this.errors.push({ message: `Constructor ${constructorName} is not part of ADT ${adtName}`, context: ctx });
-                return;
-            }
-            const constructorType = this.resolve(constructor.type);
-            if (constructorType.kind === 'function' && constructorType.params.length !== 0) {
-                this.errors.push({ message: `Constructor ${constructorName} expects parameters`, context: ctx });
-            }
-        } else if (ctx instanceof parser.AdtWithParamMatchPatternContext) {
-            const constructorName = ctx.IDENTIFIER()[0].getText();
-            const paramName = ctx.IDENTIFIER()[1].getText();
-            const constructor = this.constructorMap.get(constructorName);
-            if (!constructor || constructor.adtName !== adtName) {
-                this.errors.push({ message: `Constructor ${constructorName} is not part of ADT ${adtName}`, context: ctx });
-                return;
-            }
-            const constructorType = this.resolve(constructor.type);
-            if (constructorType.kind !== 'function' || constructorType.params.length !== 1) {
-                this.errors.push({ message: `Constructor ${constructorName} expects one parameter`, context: ctx });
-                return;
-            }
-            const paramType = constructorType.params[0];
-            this.currentEnv[this.currentEnv.length - 1].set(paramName, { type: paramType, context: ctx });
-            this.symbols.push({
-                name: paramName,
-                type: paramType,
-                context:ctx,
-                // TODO: give the more narrowly constrained context...
-                kind: 'variable'
-            });
-        } else if (ctx instanceof parser.AdtWithLiteralMatchPatternContext) {
-            const constructorName = ctx.IDENTIFIER().getText();
-            const constructor = this.constructorMap.get(constructorName);
-            if (!constructor || constructor.adtName !== adtName) {
-                this.errors.push({ message: `Constructor ${constructorName} is not part of ADT ${adtName}`, context: ctx });
-                return;
-            }
-            const constructorType = this.resolve(constructor.type);
-            if (constructorType.kind !== 'function' || constructorType.params.length !== 1) {
-                this.errors.push({ message: `Constructor ${constructorName} expects one parameter`, context: ctx });
-                return;
-            }
-            const literalType = this.visitLiteral(ctx.literal());
-            this.unify(literalType, constructorType.params[0], ctx);
-        } else if (ctx instanceof parser.WildcardMatchPatternContext) {
-            // No action needed
-        } else if (ctx instanceof parser.LiteralMatchPatternContext) {
-            const matchExpr = ctx.parent!.parent as parser.MatchExprContext;
-            const literalType = this.visitLiteral(ctx.literal());
-            const matchedType = this.resolve(
-                this.visitExpr(matchExpr.expr())
-            );
-            this.unify(literalType, matchedType, ctx);
-        } else {
-            this.errors.push({ message: 'Unknown match pattern type', context: ctx });
-        }
-    }
-
-    private visitBlockExpr(ctx: parser.BlockExprContext): Type {
-        this.enterScope();
-        ctx.stmt().forEach(stmt => this.visitStmt(stmt));
-        const resultType = this.visitExpr(ctx.expr());
-        this.exitScope();
-        return resultType;
-    }
-
-    private visitRecordExpr(ctx: parser.RecordExprContext): Type {
-        const fields = new Map<string, Type>();
-        ctx.recordKvExpr().forEach(kv => {
-            const name = kv.IDENTIFIER().getText();
-            const type = this.visitExpr(kv.expr());
-            fields.set(name, type);
-        });
-        return { kind: 'record', fields };
-    }
-
-    private visitArrayLikeExpr(ctx: parser.ArrayLikeExprContext): Type {
-        const elements = ctx.expr().map(expr => this.visitExpr(expr));
-        return { kind: 'tuple', elements };
-    }
-
-    private visitIdentifier(ctx: parser.IdentifierExpressionContext): Type {
-        const name = ctx.getText();
-        const entry = this.lookupVariable(name);
-        if (!entry) {
-            this.errors.push({ message: `Undefined variable: ${name}`, context: ctx });
-            return this.freshVar();
-        }
-        
-        // Add type hint for the identifier
-        this.addTypeHint(ctx, entry.type);
-        
-        // Special case for no-argument ADT constructors
-        const constructor = this.constructorMap.get(name);
-        if (constructor) {
-            const constructorType = this.resolve(constructor.type);
-            if (constructorType.kind === 'function' && constructorType.params.length === 0) {
-                // For no-argument constructors, return the ADT type directly
-                return constructorType.return;
-            }
-        }
-        
-        return entry.type;
-    }
-
-    private lookupVariable(name: string): EnvEntry | undefined {
-        for (let i = this.currentEnv.length - 1; i >= 0; i--) {
-            const entry = this.currentEnv[i].get(name);
-            if (entry) return entry;
-        }
-        const constructor = this.constructorMap.get(name);
-        if (constructor) {
-            return { type: constructor.type, context: constructor.context };
-        }
-        return undefined;
-    }
-
-    private visitLiteral(ctx: parser.LiteralContext): Type {
-        let type: Type;
-        
-        if (ctx instanceof parser.StringLiteralContext) {
-            type = { kind: 'primitive', name: 'string' };
-        } else if (ctx instanceof parser.NumberLiteralContext) {
-            type = { kind: 'primitive', name: 'number' };
-        } else if (ctx instanceof parser.BooleanLiteralContext) {
-            type = { kind: 'primitive', name: 'boolean' };
-        } else {
-            this.errors.push({ message: `Unknown literal type: ${ctx.getText()}`, context: ctx });
-            type = this.freshVar();
-        }
-        
-        // Add type hint for the literal
-        this.addTypeHint(ctx, type);
-        
-        return type;
-    }
-
-    // List of standard HTML elements that should be allowed without definition
-    private htmlElements = new Set([
-        'a', 'abbr', 'address', 'area', 'article', 'aside', 'audio', 'b', 'base', 'bdi', 'bdo',
-        'blockquote', 'body', 'br', 'button', 'canvas', 'caption', 'cite', 'code', 'col', 'colgroup',
-        'data', 'datalist', 'dd', 'del', 'details', 'dfn', 'dialog', 'div', 'dl', 'dt', 'em', 'embed',
-        'fieldset', 'figcaption', 'figure', 'footer', 'form', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
-        'head', 'header', 'hr', 'html', 'i', 'iframe', 'img', 'input', 'ins', 'kbd', 'label', 'legend',
-        'li', 'link', 'main', 'map', 'mark', 'meta', 'meter', 'nav', 'noscript', 'object', 'ol',
-        'optgroup', 'option', 'output', 'p', 'param', 'picture', 'pre', 'progress', 'q', 'rp', 'rt',
-        'ruby', 's', 'samp', 'script', 'section', 'select', 'small', 'source', 'span', 'strong',
-        'style', 'sub', 'summary', 'sup', 'svg', 'table', 'tbody', 'td', 'template', 'textarea',
-        'tfoot', 'th', 'thead', 'time', 'title', 'tr', 'track', 'u', 'ul', 'var', 'video', 'wbr'
-    ]);
-
-    private visitJsxExpr(ctx: parser.JsxExprContext): Type {
-        if (ctx.jsxSelfClosingElement()) {
-            const componentName = ctx.jsxSelfClosingElement()!.IDENTIFIER().getText();
-            // Check if it's a standard HTML element
-            if (this.htmlElements.has(componentName.toLowerCase())) {
-                // Process attributes but don't check component type
-                this.visitJsxAttributes(ctx.jsxSelfClosingElement()!.jsxAttributes());
-                return { kind: 'primitive', name: 'jsx' };
-            }
-            
-            // Otherwise, it's a custom component
-            const entry = this.lookupVariable(componentName);
-            if (!entry) {
-                this.errors.push({ message: `Undefined component ${componentName}`, context: ctx });
-                return { kind: 'primitive', name: 'jsx' };
-            }
-            const propsType = this.visitJsxAttributes(ctx.jsxSelfClosingElement()!.jsxAttributes());
-            this.unify(entry.type, { kind: 'function', params: [propsType], return: { kind: 'primitive', name: 'jsx' } }, ctx);
-            return { kind: 'primitive', name: 'jsx' };
-        } else if (ctx.jsxOpeningElement()) {
-            const componentName = ctx.jsxOpeningElement()!.IDENTIFIER().getText();
-            // Check if it's a standard HTML element
-            if (this.htmlElements.has(componentName.toLowerCase())) {
-                // Process attributes and children but don't check component type
-                this.visitJsxAttributes(ctx.jsxOpeningElement()!.jsxAttributes());
-                ctx.jsxChild().forEach(child => this.visitJsxChild(child));
-                return { kind: 'primitive', name: 'jsx' };
-            }
-            
-            // Otherwise, it's a custom component
-            const entry = this.lookupVariable(componentName);
-            if (!entry) {
-                this.errors.push({ message: `Undefined component ${componentName}`, context: ctx });
-                return { kind: 'primitive', name: 'jsx' };
-            }
-            const propsType = this.visitJsxAttributes(ctx.jsxOpeningElement()!.jsxAttributes());
-            this.unify(entry.type, { kind: 'function', params: [propsType], return: { kind: 'primitive', name: 'jsx' } }, ctx);
-            ctx.jsxChild().forEach(child => this.visitJsxChild(child));
-            return { kind: 'primitive', name: 'jsx' };
-        }
-        throw new Error('Unknown JSX expression type');
-    }
-
-    private visitJsxAttributes(ctx: parser.JsxAttributesContext | null): Type {
-        const fields = new Map<string, Type>();
-        if (ctx) {
-            ctx.jsxAttribute().forEach(attr => {
-                const name = attr.IDENTIFIER().getText();
-                const value = this.visitJsxAttributeValue(attr.jsxAttributeValue());
-                fields.set(name, value);
-            });
-        }
-        return { kind: 'record', fields };
-    }
-
-    private visitJsxAttributeValue(ctx: parser.JsxAttributeValueContext): Type {
-        if (ctx.STRING()) {
-            return { kind: 'primitive', name: 'string' };
-        } else if (ctx.NUMBER()) {
-            return { kind: 'primitive', name: 'number' };
-        } else if (ctx.expr()){
-            return this.visitExpr(ctx.expr()!);
-        }
-        throw new Error('Unknown JSX attribute value type');
-    }
-
-    private visitJsxChild(ctx: parser.JsxChildContext): void {
-        if (ctx instanceof parser.JsxChildExpressionContext) {
-            this.visitExpr(ctx.expr());
-        } else if (ctx instanceof parser.JsxChildJsxContext) {
-            this.visitJsxExpr(ctx.jsxExpr());
-        }
-    }
-
-    private enterScope(): void {
-        this.currentEnv.push(new Map());
-    }
-
-    private exitScope(): void {
-        this.currentEnv.pop();
-    }
+  // Example:  If you didn't need to handle jsxAttributes, you could leave it out entirely.
+  // visitJsxAttributes(ctx: parser.JsxAttributesContext): ChicoryType { ... }
 }

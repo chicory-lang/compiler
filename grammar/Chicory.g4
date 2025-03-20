@@ -12,7 +12,7 @@ stmt
     ;
 
 assignStmt
-    : assignKwd IDENTIFIER '=' expr
+    : assignKwd identifierWrapper '=' expr
     ;
 
 // TODO: Force type identifier to begin with uppercase letter
@@ -206,6 +206,10 @@ jsxChild
     : jsxExpr       #JsxChildJsx
     | '{' expr '}'  #JsxChildExpression
     | ~('<' | '{')+ #JsxChildText
+    ;
+
+identifierWrapper
+    : IDENTIFIER
     ;
 
 
