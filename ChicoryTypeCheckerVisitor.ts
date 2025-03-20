@@ -28,6 +28,7 @@ export class ChicoryTypeChecker {
   private hints: TypeHintWithContext[] = [];
   private constructors: ConstructorDefinition[] = [];
   private nextTypeVarId: number = 0;
+  private currentSubstitution: SubstitutionMap = new Map();
 
   constructor() {
     this.environment = new TypeEnvironment(null); // Initialize with the global scope
@@ -242,6 +243,8 @@ export class ChicoryTypeChecker {
     this.errors = []; // Reset errors
     this.hints = []; // Reset hints
     this.constructors = []; // Reset constructors
+    this.currentSubstitution = new Map(); // Reset substitution
+    this.nextTypeVarId = 0; // Reset type variable counter
 
     this.visitProgram(ctx);
     return { errors: this.errors, hints: this.hints };
@@ -591,15 +594,62 @@ export class ChicoryTypeChecker {
     const operator = ctx.OPERATOR().getText();
     const rhsType = this.visitExpr(ctx.expr());
 
+    // Apply current substitutions to the operand types
+    baseType = this.applySubstitution(baseType, this.currentSubstitution);
+    const rhsTypeSubstituted = this.applySubstitution(rhsType, this.currentSubstitution);
+
     switch (operator) {
       case "+":
-        if (baseType === NumberType && rhsType === NumberType) {
+        if (baseType === NumberType && rhsTypeSubstituted === NumberType) {
           return NumberType;
-        } else if (baseType === StringType && rhsType === StringType) {
+        } else if (baseType === StringType && rhsTypeSubstituted === StringType) {
           return StringType;
         } else {
+          // Try to unify with expected types
+          if (baseType instanceof TypeVariable) {
+            const result = this.unify(baseType, NumberType, this.currentSubstitution);
+            if (!(result instanceof Error)) {
+              // If baseType can be a number, check if rhsType can also be a number
+              if (rhsTypeSubstituted instanceof TypeVariable) {
+                const rhsResult = this.unify(rhsTypeSubstituted, NumberType, this.currentSubstitution);
+                if (!(rhsResult instanceof Error)) {
+                  return NumberType;
+                }
+              } else if (rhsTypeSubstituted === NumberType) {
+                return NumberType;
+              }
+            }
+            
+            // Try string concatenation
+            const strResult = this.unify(baseType, StringType, this.currentSubstitution);
+            if (!(strResult instanceof Error)) {
+              // If baseType can be a string, check if rhsType can also be a string
+              if (rhsTypeSubstituted instanceof TypeVariable) {
+                const rhsResult = this.unify(rhsTypeSubstituted, StringType, this.currentSubstitution);
+                if (!(rhsResult instanceof Error)) {
+                  return StringType;
+                }
+              } else if (rhsTypeSubstituted === StringType) {
+                return StringType;
+              }
+            }
+          } else if (rhsTypeSubstituted instanceof TypeVariable) {
+            // If the right side is a type variable, try to unify it with the base type
+            if (baseType === NumberType) {
+              const result = this.unify(rhsTypeSubstituted, NumberType, this.currentSubstitution);
+              if (!(result instanceof Error)) {
+                return NumberType;
+              }
+            } else if (baseType === StringType) {
+              const result = this.unify(rhsTypeSubstituted, StringType, this.currentSubstitution);
+              if (!(result instanceof Error)) {
+                return StringType;
+              }
+            }
+          }
+          
           this.reportError(
-            `Operator '+' cannot be applied to types '${baseType}' and '${rhsType}'`,
+            `Operator '+' cannot be applied to types '${baseType}' and '${rhsTypeSubstituted}'`,
             ctx
           );
           return UnknownType;
@@ -607,15 +657,38 @@ export class ChicoryTypeChecker {
       case "-":
       case "*":
       case "/":
-        if (baseType === NumberType && rhsType === NumberType) {
-          return NumberType;
-        } else {
+        // Try to unify operands with NumberType
+        if (baseType instanceof TypeVariable) {
+          const result = this.unify(baseType, NumberType, this.currentSubstitution);
+          if (result instanceof Error) {
+            this.reportError(
+              `Left operand of '${operator}' must be a number, but got '${baseType}'`,
+              ctx
+            );
+          }
+        } else if (baseType !== NumberType) {
           this.reportError(
-            `Operator '${operator}' cannot be applied to types '${baseType}' and '${rhsType}'`,
+            `Left operand of '${operator}' must be a number, but got '${baseType}'`,
             ctx
           );
-          return UnknownType;
         }
+        
+        if (rhsTypeSubstituted instanceof TypeVariable) {
+          const result = this.unify(rhsTypeSubstituted, NumberType, this.currentSubstitution);
+          if (result instanceof Error) {
+            this.reportError(
+              `Right operand of '${operator}' must be a number, but got '${rhsTypeSubstituted}'`,
+              ctx
+            );
+          }
+        } else if (rhsTypeSubstituted !== NumberType) {
+          this.reportError(
+            `Right operand of '${operator}' must be a number, but got '${rhsTypeSubstituted}'`,
+            ctx
+          );
+        }
+        
+        return NumberType;
       case "==":
       case "!=":
       case "<":
@@ -624,14 +697,32 @@ export class ChicoryTypeChecker {
       case ">=":
         // Basic compatibility check
         if (
-          (baseType === NumberType && rhsType === NumberType) ||
-          (baseType === StringType && rhsType === StringType) ||
-          (baseType === BooleanType && rhsType === BooleanType)
+          (baseType === NumberType && rhsTypeSubstituted === NumberType) ||
+          (baseType === StringType && rhsTypeSubstituted === StringType) ||
+          (baseType === BooleanType && rhsTypeSubstituted === BooleanType)
         ) {
           return BooleanType;
+        } else if (baseType instanceof TypeVariable || rhsTypeSubstituted instanceof TypeVariable) {
+          // If either operand is a type variable, try to unify them
+          const result = this.unify(baseType, rhsTypeSubstituted, this.currentSubstitution);
+          if (!(result instanceof Error)) {
+            // Successfully unified the types
+            const unifiedType = this.applySubstitution(baseType, this.currentSubstitution);
+            
+            // Check if the unified type is a valid operand for comparison
+            if (unifiedType === NumberType || unifiedType === StringType || unifiedType === BooleanType) {
+              return BooleanType;
+            }
+          }
+          
+          this.reportError(
+            `Operator '${operator}' cannot be applied to types '${baseType}' and '${rhsTypeSubstituted}'`,
+            ctx
+          );
+          return UnknownType;
         } else {
           this.reportError(
-            `Operator '${operator}' cannot be applied to types '${baseType}' and '${rhsType}'`,
+            `Operator '${operator}' cannot be applied to types '${baseType}' and '${rhsTypeSubstituted}'`,
             ctx
           );
           return UnknownType;
@@ -639,15 +730,38 @@ export class ChicoryTypeChecker {
 
       case "&&":
       case "||":
-        if (baseType === BooleanType && rhsType === BooleanType) {
-          return BooleanType;
-        } else {
+        // Try to unify operands with BooleanType
+        if (baseType instanceof TypeVariable) {
+          const result = this.unify(baseType, BooleanType, this.currentSubstitution);
+          if (result instanceof Error) {
+            this.reportError(
+              `Left operand of '${operator}' must be a boolean, but got '${baseType}'`,
+              ctx
+            );
+          }
+        } else if (baseType !== BooleanType) {
           this.reportError(
-            `Operator '${operator}' cannot be applied to types '${baseType}' and '${rhsType}'`,
+            `Left operand of '${operator}' must be a boolean, but got '${baseType}'`,
             ctx
           );
-          return UnknownType;
         }
+        
+        if (rhsTypeSubstituted instanceof TypeVariable) {
+          const result = this.unify(rhsTypeSubstituted, BooleanType, this.currentSubstitution);
+          if (result instanceof Error) {
+            this.reportError(
+              `Right operand of '${operator}' must be a boolean, but got '${rhsTypeSubstituted}'`,
+              ctx
+            );
+          }
+        } else if (rhsTypeSubstituted !== BooleanType) {
+          this.reportError(
+            `Right operand of '${operator}' must be a boolean, but got '${rhsTypeSubstituted}'`,
+            ctx
+          );
+        }
+        
+        return BooleanType;
       default:
         this.reportError(`Unsupported operator: ${operator}`, ctx);
         return UnknownType;
@@ -686,8 +800,10 @@ export class ChicoryTypeChecker {
 
     const type = this.environment.getType(identifierName);
     if (type) {
-      this.hints.push({ context: ctx, type: type.toString() });
-      return type;
+      // Apply any substitutions to the type
+      const substitutedType = this.applySubstitution(type, this.currentSubstitution);
+      this.hints.push({ context: ctx, type: substitutedType.toString() });
+      return substitutedType;
     }
 
     // Check if this is an ADT constructor
@@ -695,16 +811,18 @@ export class ChicoryTypeChecker {
       (c) => c.name === identifierName
     );
     if (constructor) {
-      this.hints.push({ context: ctx, type: constructor.type.toString() });
+      // Apply any substitutions to the constructor type
+      const substitutedType = this.applySubstitution(constructor.type, this.currentSubstitution);
+      this.hints.push({ context: ctx, type: substitutedType.toString() });
       
       // Special case for no-argument constructors
-      if (constructor.type instanceof FunctionType && constructor.type.paramTypes.length === 0) {
+      if (substitutedType instanceof FunctionType && substitutedType.paramTypes.length === 0) {
         // For no-argument constructors, return the ADT type instead of the constructor type
         return new AdtType(constructor.adtName);
       }
       
       // For constructors with arguments, return the constructor type
-      return constructor.type;
+      return substitutedType;
     }
 
     this.reportError(`Identifier '${identifierName}' is not defined.`, ctx);
@@ -772,7 +890,16 @@ export class ChicoryTypeChecker {
   visitIfExpr(ctx: parser.IfExprContext): ChicoryType {
     const conditionType = this.visitExpr(ctx.justIfExpr()[0].expr()[0]);
 
-    if (conditionType !== BooleanType) {
+    // Try to unify condition with BooleanType
+    if (conditionType instanceof TypeVariable) {
+      const result = this.unify(conditionType, BooleanType, this.currentSubstitution);
+      if (result instanceof Error) {
+        this.reportError(
+          `Condition of if expression must be boolean, but got '${conditionType}'`,
+          ctx.justIfExpr()[0].expr()[0]
+        );
+      }
+    } else if (conditionType !== BooleanType) {
       this.reportError(
         `Condition of if expression must be boolean, but got '${conditionType}'`,
         ctx.justIfExpr()[0].expr()[0]
@@ -784,12 +911,23 @@ export class ChicoryTypeChecker {
     // Check 'else if' branches
     for (let i = 1; i < ctx.justIfExpr().length; i++) {
       const elseIfConditionType = this.visitExpr(ctx.justIfExpr()[i].expr()[0]);
-      if (elseIfConditionType !== BooleanType) {
+      
+      // Try to unify condition with BooleanType
+      if (elseIfConditionType instanceof TypeVariable) {
+        const result = this.unify(elseIfConditionType, BooleanType, this.currentSubstitution);
+        if (result instanceof Error) {
+          this.reportError(
+            `Condition of else if expression must be boolean, but got '${elseIfConditionType}'`,
+            ctx.justIfExpr()[i].expr()[0]
+          );
+        }
+      } else if (elseIfConditionType !== BooleanType) {
         this.reportError(
           `Condition of else if expression must be boolean, but got '${elseIfConditionType}'`,
           ctx.justIfExpr()[i].expr()[0]
         );
       }
+      
       // Note: We are not requiring same types for all branches
       this.visitExpr(ctx.justIfExpr()[i].expr()[1]);
     }
@@ -803,6 +941,11 @@ export class ChicoryTypeChecker {
   }
 
   visitFuncExpr(ctx: parser.FuncExprContext): ChicoryType {
+    // Save the current substitution
+    const outerSubstitution = new Map(this.currentSubstitution);
+    // Create a fresh substitution for this function
+    this.currentSubstitution = new Map();
+    
     this.environment = this.environment.pushScope(); // Push a new scope for function parameters
 
     const paramTypes: ChicoryType[] = [];
@@ -811,26 +954,39 @@ export class ChicoryTypeChecker {
         .parameterList()!
         .IDENTIFIER()
         .forEach((param) => {
-          // For now, declare params as UnknownType; we're not handling explicit type annotations on params yet.
           const paramName = param.getText();
-          // TODO: Fix the scoping of this context (probably need to wrap param in .g4 or something)
-          // this.environment.declare(paramName, UnknownType, param, (str) => this.reportError(str, param));
-          this.environment.declare(paramName, UnknownType, ctx, (str) =>
+          // Create a fresh type variable for each parameter
+          const typeVar = this.newTypeVar();
+          this.environment.declare(paramName, typeVar, ctx, (str) =>
             this.reportError(str, ctx)
           );
-          paramTypes.push(UnknownType);
+          paramTypes.push(typeVar);
         });
     }
 
     const returnType = this.visitExpr(ctx.expr());
+    
+    // Apply the accumulated substitutions to parameter types and return type
+    const inferredParamTypes = paramTypes.map(type => 
+      this.applySubstitution(type, this.currentSubstitution)
+    );
+    const inferredReturnType = this.applySubstitution(returnType, this.currentSubstitution);
+    
     this.environment = this.environment.popScope()!; // Pop the function scope
-    return new FunctionType(paramTypes, returnType);
+    
+    // Restore the outer substitution
+    this.currentSubstitution = outerSubstitution;
+    
+    return new FunctionType(inferredParamTypes, inferredReturnType);
   }
 
   visitCallExpr(
     ctx: parser.CallExprContext,
     functionType: ChicoryType
   ): ChicoryType {
+    // Apply current substitutions to the function type
+    functionType = this.applySubstitution(functionType, this.currentSubstitution);
+    
     if (
       !(functionType instanceof FunctionType) &&
       !(functionType instanceof GenericType)
@@ -860,8 +1016,6 @@ export class ChicoryTypeChecker {
       throw new Error("Not implemented generic type call expressions yet...");
     }
 
-    const substitution: SubstitutionMap = new Map();
-
     // unify argument types with parameter types
     if (argumentTypes.length !== expectedParamTypes.length) {
       this.reportError(
@@ -873,7 +1027,7 @@ export class ChicoryTypeChecker {
         const result = this.unify(
           expectedParamTypes[i],
           argumentTypes[i],
-          substitution
+          this.currentSubstitution
         );
         if (result instanceof Error) {
           this.reportError(
@@ -884,7 +1038,7 @@ export class ChicoryTypeChecker {
       }
     }
 
-    returnType = this.applySubstitution(returnType, substitution);
+    returnType = this.applySubstitution(returnType, this.currentSubstitution);
     
     // Add a hint for debugging
     this.hints.push({ context: ctx, type: returnType.toString() });
