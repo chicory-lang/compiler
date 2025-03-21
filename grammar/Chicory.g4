@@ -129,7 +129,7 @@ callExpr
     ;
 
 matchExpr
-    : 'match' '(' expr ')' '{' NL* matchArm (',' NL* matchArm)* ','? NL* '}'
+    : 'match' '(' expr ')' '{' NL* matchArm (NL+ matchArm)* NL* '}'
     ;
 
 matchArm
