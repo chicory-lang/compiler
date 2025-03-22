@@ -302,6 +302,10 @@ export class ChicoryParserVisitor {
                 pattern: `${varName}.type === "${adtName}"`,
                 inject: `const ${paramName} = ${varName}.value;`
             };
+        } else if (ctx.ruleContext instanceof parser.AdtWithWildcardMatchPatternContext) {
+                const adtName = (ctx as parser.AdtWithWildcardMatchPatternContext).IDENTIFIER().getText();
+                // Just check the type
+                return { pattern: `${varName}.type === "${adtName}"` }; 
         } else if (ctx.ruleContext instanceof parser.AdtWithLiteralMatchPatternContext) {
             const adtName = (ctx as parser.AdtWithLiteralMatchPatternContext).IDENTIFIER().getText();
             const literalValue = this.visitLiteral((ctx as parser.AdtWithLiteralMatchPatternContext).literal());

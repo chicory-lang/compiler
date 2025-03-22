@@ -137,9 +137,10 @@ matchArm
     ;
 
 matchPattern
-    : IDENTIFIER                    #BareAdtMatchPattern
+    : IDENTIFIER '(' '_' ')'        #AdtWithWildcardMatchPattern
     | IDENTIFIER '(' IDENTIFIER ')' #AdtWithParamMatchPattern
     | IDENTIFIER '(' literal ')'    #AdtWithLiteralMatchPattern
+    | IDENTIFIER                    #BareAdtMatchPattern
     | '_'                           #WildcardMatchPattern
     | literal                       #LiteralMatchPattern
     ;
