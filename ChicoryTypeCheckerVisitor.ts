@@ -1446,7 +1446,28 @@ export class ChicoryTypeChecker {
       );
 
       const uncoveredCases = allPossibleCases.filter(
-        (possibleCase) => !coveredCases.includes(possibleCase)
+        possibleCase => {
+          return !coveredCases.some(coveredCase => {
+            // Check if coveredCase "covers" possibleCase
+    
+            // Exact match (e.g., Guest === Guest)
+            if (coveredCase === possibleCase) {
+              return true;
+            }
+    
+            // Wildcard case covers parameterized case (e.g., LoggedIn(*) covers LoggedIn(string))
+            const coveredCaseParts = coveredCase.match(/^(.*)\(\*\)$/);
+            const possibleCaseParts = possibleCase.match(/^(.*)\(.*\)$/); // Match any parameter
+    
+            if (coveredCaseParts && possibleCaseParts) {
+              if (coveredCaseParts[1] === possibleCaseParts[1]) { // Constructor names match (e.g., LoggedIn)
+                return true; // Wildcard case covers parameterized case
+              }
+            }
+    
+            return false; // Not covered
+          });
+        }
       );
 
       if (uncoveredCases.length > 0) {
