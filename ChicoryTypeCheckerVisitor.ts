@@ -1466,6 +1466,16 @@ export class ChicoryTypeChecker {
       }
     }
 
+    /** 
+     * TODO: Check that all arms are possible to reach:
+     * It's meaningless to have:
+     *    match (X) {
+     *        Arm(_) => "wildcard"
+     *        Arm(y) => "variable"
+     *    }
+     * because the first arm matches everything the second arm would.
+     */
+
     // Check that all arms return the same type
     const firstType = returnTypes[0] || UnknownType;
     for (let i = 1; i < returnTypes.length; i++) {
