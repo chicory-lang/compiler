@@ -25,6 +25,7 @@ type LspDiagnostic = {
 type TypeHintWithContext = {
     context: ParserRuleContext;
     type: string;
+    // message?: string;  // Optional extra message
 }
 
 type TypeHint = {

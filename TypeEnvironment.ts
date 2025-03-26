@@ -1,5 +1,5 @@
 import { ParserRuleContext } from 'antlr4ng';
-import { ChicoryType } from './ChicoryTypes';
+import { ChicoryType, TypeVariable } from './ChicoryTypes';
 import { CompilationError } from './env';
 
 export class TypeEnvironment {
@@ -20,7 +20,7 @@ export class TypeEnvironment {
         return undefined;
     }
     
-    declare(identifier: string, type: ChicoryType, context: ParserRuleContext, pushError: (str) => void): void {
+    declare(identifier: string, type: ChicoryType, context: ParserRuleContext | null, pushError: (str) => void): void {
         if (this.bindings.has(identifier)) {
             pushError(`Identifier '${identifier}' is already declared in this scope.`)
             return // We don't want to continue because this is an error

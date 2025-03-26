@@ -12,7 +12,7 @@ stmt
     ;
 
 assignStmt
-    : assignKwd identifierWrapper '=' expr
+    : assignKwd identifierWrapper (':' typeExpr)? '=' expr
     ;
 
 // TODO: Force type identifier to begin with uppercase letter
@@ -25,12 +25,18 @@ typeParams
     ;
 
 typeExpr
+    : primaryTypeExpr ( '[]' )*
+    ;
+
+primaryTypeExpr
     : adtType
     | recordType
     | tupleType
     | primitiveType
     | functionType
     | genericTypeExpr
+    | IDENTIFIER
+    | '(' typeExpr ')'
     ;
 
 adtType: NL* '|'? adtOption (NL* '|' adtOption )* NL*;
@@ -157,6 +163,7 @@ recordKvExpr: IDENTIFIER ':' expr;
 
 arrayLikeExpr
     : '[' NL* (expr NL* (',' NL* expr)*)? NL* ','? NL* ']'
+    | '[]'
     ;
 
 assignKwd

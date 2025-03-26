@@ -5,8 +5,6 @@ import compile from "../compile";
 
 test('Cases in match with generic type (covered)', () => {
     const code = `
-type Option<T> = Some(T) | None
-
 let v = match(Some("hi!")) {
     Some("x") => "asdf"
     Some(_) => "asdf2"
