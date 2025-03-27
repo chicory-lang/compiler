@@ -12,7 +12,7 @@ stmt
     ;
 
 assignStmt
-    : assignKwd identifierWrapper (':' typeExpr)? '=' expr
+    : assignKwd assignTarget (':' typeExpr)? '=' expr
     ;
 
 // TODO: Force type identifier to begin with uppercase letter
@@ -90,11 +90,25 @@ bindingIdentifier:
     IDENTIFIER 'as' typeExpr
     ;
 
+assignTarget
+    : IDENTIFIER
+    | recordDestructuringPattern
+    | arrayDestructuringPattern
+    ;
+
+recordDestructuringPattern
+    : '{' NL* IDENTIFIER (',' NL* IDENTIFIER)* ','? NL* '}'
+    ;
+
+arrayDestructuringPattern
+    : '[' NL* IDENTIFIER (',' NL* IDENTIFIER)* ','? NL* ']'
+    ;
+
 exportStmt
     : 'export' '{' NL* IDENTIFIER (',' NL* IDENTIFIER)* ','? NL* '}'
     ;
 
-expr: primaryExpr tailExpr*; 
+expr: primaryExpr tailExpr*;
 
 primaryExpr
     : ifExpr            #IfExpression
@@ -214,10 +228,6 @@ jsxChild
     : jsxExpr       #JsxChildJsx
     | '{' expr '}'  #JsxChildExpression
     | ~('<' | '{')+ #JsxChildText
-    ;
-
-identifierWrapper
-    : IDENTIFIER
     ;
 
 

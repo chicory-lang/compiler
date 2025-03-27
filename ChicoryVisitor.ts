@@ -67,9 +67,23 @@ export class ChicoryParserVisitor {
 
   visitAssignStmt(ctx: parser.AssignStmtContext): string {
     const assignKwd = ctx.assignKwd().getText(); // 'let' or 'const'
-    const identifier = ctx.identifierWrapper().getText();
+    const targetCtx = ctx.assignTarget();
     const expr = this.visitExpr(ctx.expr());
-    return `${this.indent()}${assignKwd} ${identifier} = ${expr}`;
+
+    let targetJs: string;
+    if (targetCtx.IDENTIFIER()) {
+        targetJs = targetCtx.IDENTIFIER()!.getText();
+    } else if (targetCtx.recordDestructuringPattern()) {
+        const identifiers = targetCtx.recordDestructuringPattern()!.IDENTIFIER().map(id => id.getText()).join(', ');
+        targetJs = `{ ${identifiers} }`;
+    } else if (targetCtx.arrayDestructuringPattern()) {
+        const identifiers = targetCtx.arrayDestructuringPattern()!.IDENTIFIER().map(id => id.getText()).join(', ');
+        targetJs = `[ ${identifiers} ]`;
+    } else {
+        targetJs = `/* ERROR: Unknown assignment target */`;
+        this.reportError(`Unknown assignment target type during compilation: ${targetCtx.getText()}`, targetCtx);
+    }
+    return `${this.indent()}${assignKwd} ${targetJs} = ${expr}`;
   }
 
   visitExportStmt(ctx: parser.ExportStmtContext): string {
@@ -614,7 +628,7 @@ export class ChicoryParserVisitor {
 
     const { errors, hints, expressionTypes, prelude } = this.typeChecker.check(ctx);
     this.expressionTypes = expressionTypes
-    
+
     const typeErrors = errors.map((err) => ({
       message: `Type Error: ${err.message}`,
       context: err.context,

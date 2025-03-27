@@ -379,17 +379,18 @@ export class ChicoryTypeChecker {
   }
 
   visitAssignStmt(ctx: parser.AssignStmtContext): ChicoryType {
-    const identifierName = ctx.identifierWrapper()!.IDENTIFIER().getText();
+    const targetCtx = ctx.assignTarget();
     const expressionCtx = ctx.expr();
-    const annotationCtx = ctx.typeExpr(); // Assuming grammar allows optional typeExpr here
+    const annotationCtx = ctx.typeExpr();
 
     let expressionType = this.visitExpr(expressionCtx);
     expressionType = this.applySubstitution(expressionType, this.currentSubstitution); // Apply subs before unification
 
-    let finalType: ChicoryType = expressionType;
+    let annotatedType: ChicoryType | null = null;
+    let rhsFinalType: ChicoryType = expressionType; // The type of the RHS after potential annotation unification
 
     if (annotationCtx) {
-      let annotatedType = this.visitTypeExpr(annotationCtx);
+      annotatedType = this.visitTypeExpr(annotationCtx);
       annotatedType = this.applySubstitution(annotatedType, this.currentSubstitution); // Apply subs to annotation too
 
       // Unify the annotated type with the inferred expression type
@@ -397,24 +398,93 @@ export class ChicoryTypeChecker {
 
       if (unificationResult instanceof Error) {
         this.reportError(
-          `Type mismatch: Cannot assign expression of type '${expressionType}' to variable '${identifierName}' annotated with type '${annotatedType}'. ${unificationResult.message}`,
+          `Type mismatch: Cannot assign expression of type '${expressionType}' to target annotated with type '${annotatedType}'. ${unificationResult.message}`,
           ctx
         );
-        // Use UnknownType or annotatedType? Let's use annotatedType to respect the user's intent partially.
-        finalType = annotatedType;
+        // Use annotated type to proceed, respecting user intent partially
+        rhsFinalType = annotatedType;
       } else {
         // Unification successful, use the unified type (which might be more specific)
         // Apply substitutions resulting from unification
-        finalType = this.applySubstitution(annotatedType, this.currentSubstitution);
+        rhsFinalType = this.applySubstitution(annotatedType, this.currentSubstitution);
       }
     }
 
-    // Declare the variable with the final determined type
-    this.environment.declare(identifierName, finalType, ctx, (str) =>
-      this.reportError(str, ctx)
-    );
-    this.hints.push({ context: ctx.identifierWrapper()!, type: finalType.toString() }); // Add hint for variable
-    return finalType;
+    // Handle different assignment targets
+    if (targetCtx.IDENTIFIER()) {
+      // Simple assignment: let x = ...
+      const identifierName = targetCtx.IDENTIFIER()!.getText();
+      this.environment.declare(identifierName, rhsFinalType, ctx, (str) =>
+        this.reportError(str, ctx)
+      );
+      this.hints.push({ context: targetCtx, type: rhsFinalType.toString() });
+    } else if (targetCtx.recordDestructuringPattern()) {
+      // Record destructuring: let { a, b } = ...
+      const patternCtx = targetCtx.recordDestructuringPattern()!;
+      if (!(rhsFinalType instanceof RecordType)) {
+        this.reportError(`Cannot destructure non-record type '${rhsFinalType}' as a record.`, expressionCtx);
+        // Declare variables as Unknown to avoid cascading errors
+        patternCtx.IDENTIFIER().forEach(idNode => {
+            const idName = idNode.getText();
+            this.environment.declare(idName, UnknownType, null, (str) => this.reportError(str, patternCtx));
+            this.hints.push({ context: patternCtx, type: UnknownType.toString() });
+        });
+      } else {
+        patternCtx.IDENTIFIER().forEach(idNode => {
+          const idName = idNode.getText();
+          if (!rhsFinalType.fields.has(idName)) {
+            this.reportError(`Property '${idName}' does not exist on type '${rhsFinalType}'.`, patternCtx);
+            this.environment.declare(idName, UnknownType, null, (str) => this.reportError(str, patternCtx));
+            this.hints.push({ context: patternCtx, type: UnknownType.toString() });
+          } else {
+            const fieldType = this.applySubstitution(rhsFinalType.fields.get(idName)!, this.currentSubstitution);
+            this.environment.declare(idName, fieldType, null, (str) => this.reportError(str, patternCtx));
+            this.hints.push({ context: patternCtx, type: fieldType.toString() });
+          }
+        });
+      }
+    } else if (targetCtx.arrayDestructuringPattern()) {
+      // Array/Tuple destructuring: let [x, y] = ...
+      const patternCtx = targetCtx.arrayDestructuringPattern()!;
+      const identifiers = patternCtx.IDENTIFIER();
+
+      if (rhsFinalType instanceof ArrayType) {
+        const elementType = this.applySubstitution(rhsFinalType.elementType, this.currentSubstitution);
+        identifiers.forEach(idNode => {
+          const idName = idNode.getText();
+          this.environment.declare(idName, elementType, null, (str) => this.reportError(str, patternCtx));
+          this.hints.push({ context: patternCtx, type: elementType.toString() });
+        });
+      } else if (rhsFinalType instanceof TupleType) {
+        if (identifiers.length > rhsFinalType.elementTypes.length) {
+          this.reportError(`Destructuring pattern has ${identifiers.length} elements, but tuple type '${rhsFinalType}' only has ${rhsFinalType.elementTypes.length}.`, patternCtx);
+        }
+        identifiers.forEach((idNode, index) => {
+          const idName = idNode.getText();
+          if (index < rhsFinalType.elementTypes.length) {
+            const elementType = this.applySubstitution(rhsFinalType.elementTypes[index], this.currentSubstitution);
+            this.environment.declare(idName, elementType, null, (str) => this.reportError(str, patternCtx));
+            this.hints.push({ context: patternCtx, type: elementType.toString() });
+          } else {
+            // Error already reported about length mismatch, declare as Unknown
+            this.environment.declare(idName, UnknownType, null, (str) => this.reportError(str, patternCtx));
+            this.hints.push({ context: patternCtx, type: UnknownType.toString() });
+          }
+        });
+      } else {
+        this.reportError(`Cannot destructure non-array/non-tuple type '${rhsFinalType}' as an array.`, expressionCtx);
+        // Declare variables as Unknown
+        identifiers.forEach(idNode => {
+            const idName = idNode.getText();
+            this.environment.declare(idName, UnknownType, null, (str) => this.reportError(str, patternCtx));
+            this.hints.push({ context: patternCtx, type: UnknownType.toString() });
+        });
+      }
+    } else {
+      this.reportError("Unknown assignment target type.", targetCtx);
+    }
+
+    return rhsFinalType; // Return the type of the right-hand side
   }
 
   visitTypeDefinition(ctx: parser.TypeDefinitionContext): ChicoryType {
