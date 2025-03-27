@@ -1693,7 +1693,7 @@ export class ChicoryTypeChecker {
     this.environment = this.environment.pushScope(); // Push a new scope for function parameters
 
     const paramTypes: ChicoryType[] = [];
-    if (ctx.parameterList()) {
+    if (ctx instanceof parser.ParenFunctionExpressionContext && ctx.parameterList()) {
       ctx
         .parameterList()!
         .IDENTIFIER()
@@ -1707,8 +1707,17 @@ export class ChicoryTypeChecker {
           paramTypes.push(typeVar);
         });
     }
+    else if (ctx instanceof parser.ParenlessFunctionExpressionContext) {
+      const paramName = ctx.IDENTIFIER().getText()
+      const typeVar = this.newTypeVar();
+      this.environment.declare(paramName, typeVar, ctx, (str) =>
+        this.reportError(str, ctx)
+      );
+      paramTypes.push(typeVar)
+    }
 
-    const returnType = this.visitExpr(ctx.expr());
+    // This could be either kind, but both have `.expr`
+    const returnType = this.visitExpr((ctx as parser.ParenExpressionContext).expr());
 
     // Apply the accumulated substitutions to parameter types and return type
     const inferredParamTypes = paramTypes.map((type) =>

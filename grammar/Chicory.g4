@@ -120,7 +120,7 @@ primaryExpr
     | arrayLikeExpr     #ArrayLikeExpression
     | IDENTIFIER        #IdentifierExpression
     | literal           #LiteralExpression
-    | '(' expr ')'      #ParenExpression
+    | '(' NL* expr NL* ')'      #ParenExpression
     ;
 
 tailExpr
@@ -137,7 +137,8 @@ justIfExpr
     ;
 
 funcExpr
-    : '(' NL* parameterList? NL* ')' '=>' NL* expr
+    : '(' NL* parameterList? NL* ')' '=>' NL* expr  #ParenFunctionExpression
+    | IDENTIFIER '=>' NL* expr                      #ParenlessFunctionExpression
     ;
 
 parameterList

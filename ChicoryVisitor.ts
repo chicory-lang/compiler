@@ -369,23 +369,26 @@ export class ChicoryParserVisitor {
 
   visitFuncExpr(ctx: parser.FuncExprContext): string {
     this.enterScope();
-    const params = ctx.parameterList()
-      ? this.visitParameterList(ctx.parameterList()!)
-      : "";
-    const childExpr = ctx.expr().getChild(0);
-    const body =
-      childExpr instanceof parser.BlockExpressionContext
-        ? this.visitBlockExpr(childExpr.blockExpr())
-        : this.visitExpr(ctx.expr());
+    
+    const params: string[] = []
+    if (ctx instanceof parser.ParenFunctionExpressionContext && ctx.parameterList()) {
+        params.push(...this.visitParameterList(ctx.parameterList()!))
+    }
+    else if (ctx instanceof parser.ParenlessFunctionExpressionContext) {
+        params.push(ctx.IDENTIFIER().getText())
+    }
+    
+    // @ts-expect-error TS can't tell that ctx will always have an expr. But we know it will because there are only two options and both have one expr.
+    const body = this.visitExpr(ctx.expr()!)
+    
     this.exitScope();
-    return `(${params}) => ${body}`;
+    return `(${params.join(", ")}) => ${body}`;
   }
 
-  visitParameterList(ctx: parser.ParameterListContext): string {
+  visitParameterList(ctx: parser.ParameterListContext): string[] {
     return ctx
       .IDENTIFIER()
-      .map((id) => id.getText())
-      .join(", ");
+      .map((id) => id.getText());
   }
 
   visitCallExpr(ctx: parser.CallExprContext): string {
