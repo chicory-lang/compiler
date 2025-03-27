@@ -235,7 +235,7 @@ OPERATOR: '+' | '-' | '*' | '/' | '==' | '!=' | '<' | '>' | '<=' | '>=' | '&&' |
 // TODO: Handle escaping
 STRING: '"' (~["\n])* '"';
 
-NUMBER: [0-9]+ ('.' [0-9]+)?;
+NUMBER: '-'? [0-9]+ ('.' [0-9]+)?;
 
 NL: '\n';
 WS: [ \r\t]+ -> channel(HIDDEN);
