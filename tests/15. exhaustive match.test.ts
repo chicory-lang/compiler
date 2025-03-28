@@ -17,8 +17,6 @@ let v = match(Some("hi!")) {
 
 test('Cases in match with generic type (not exhaustively covered)', () => {
     const code = `
-type Option<T> = Some(T) | None
-
 let v = match(Some("hi!")) {
     Some("x") => "asdf"
     None => { "nothing" }   

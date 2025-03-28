@@ -110,9 +110,9 @@ bun run exec ./sample.chic
 - [x] Vite plugin (wip) (https://github.com/chicory-lang/vite-plugin-chicory)
 - [ ] Documentation (wip) (https://chicory-lang.github.io/)
 - [ ] Language features & stabilization
-- [ ] Hindley-Milner type inference
+- [x] Hindley-Milner type inference (wip)
 - [ ] Bindings to JS libraries and runtimes
-- [ ] Type checking (wip)
+- [x] Type checking (wip)
 - [x] Syntax highlighting
     - [x] Tree-sitter (wip) (https://github.com/chicory-lang/tree-sitter-chicory)
-    - [ ] Textmate (wip)
+    - [x] Textmate (wip) (see https://github.com/chicory-lang/vscode-lsp-extension/tree/main/client/syntaxes)

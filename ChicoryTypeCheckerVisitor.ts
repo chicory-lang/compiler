@@ -321,6 +321,49 @@ export class ChicoryTypeChecker {
     return false;
   }
 
+  // Helper function to instantiate a function type with fresh type variables
+  private instantiateFunctionType(funcType: FunctionType): FunctionType {
+      // Find all unique type variables within the function type signature
+      const typeVars = new Set<string>();
+      const findVars = (type: ChicoryType) => {
+          if (type instanceof TypeVariable) {
+              // Only consider variables not bound in the immediate environment
+              // For simplicity, we assume top-level constructor/function types need full instantiation.
+              // A more complex implementation might check environment depth.
+              typeVars.add(type.name);
+          } else if (type instanceof FunctionType) {
+              type.paramTypes.forEach(findVars);
+              findVars(type.returnType);
+          } else if (type instanceof ArrayType) {
+              findVars(type.elementType);
+          } else if (type instanceof TupleType) {
+              type.elementTypes.forEach(findVars);
+          } else if (type instanceof RecordType) {
+              Array.from(type.fields.values()).forEach(findVars);
+          } else if (type instanceof GenericType) {
+              type.typeArguments.forEach(findVars);
+          }
+      };
+      // Find variables in parameters and return type
+      funcType.paramTypes.forEach(findVars);
+      findVars(funcType.returnType);
+
+      // Create a substitution map from old var names to fresh vars
+      const substitution: SubstitutionMap = new Map();
+      typeVars.forEach(varName => {
+          substitution.set(varName, this.newTypeVar());
+      });
+
+      // If no variables were found, return the original type
+      if (substitution.size === 0) {
+          return funcType;
+      }
+
+      // Apply the substitution to create the new, instantiated function type
+      // We need to ensure applySubstitution correctly handles FunctionType (which it should)
+      return this.applySubstitution(funcType, substitution) as FunctionType;
+  }
+
   // Helper method to report errors
   private reportError(message: string, context: ParserRuleContext): void {
     this.errors.push({ message, context });
@@ -1429,67 +1472,76 @@ export class ChicoryTypeChecker {
   visitIdentifier(ctx: parser.IdentifierExpressionContext): ChicoryType {
     const identifierName = ctx.IDENTIFIER().getText();
 
-    const type = this.environment.getType(identifierName);
-    if (type) {
-      // Apply any substitutions to the type
-      const substitutedType = this.applySubstitution(
-        type,
-        this.currentSubstitution
-      );
+    // 1. Check environment first (variables, non-generic functions, etc.)
+    const envType = this.environment.getType(identifierName);
+    if (envType) {
+        // Apply substitutions to the type found in the environment
+        let substitutedType = this.applySubstitution(envType, this.currentSubstitution);
 
-      // If it's a generic type, instantiate it with fresh type variables
-      if (substitutedType instanceof GenericType) {
-        const instantiatedType = this.instantiateGenericType(substitutedType);
-        this.hints.push({ context: ctx, type: instantiatedType.toString() });
-        return instantiatedType;
-      }
+        // If it's a function type from the env that might be generic, instantiate it.
+        // This part might need refinement depending on how generic functions are defined/stored.
+        // For now, let's assume functions directly from env might need instantiation if they contain unbound vars.
+        if (substitutedType instanceof FunctionType) {
+             // Check if it contains type variables that might need instantiation
+             // A simple check: does it contain any TypeVariable instances?
+             let containsTypeVars = false;
+             const checkVars = (t: ChicoryType) => {
+                 if (t instanceof TypeVariable) containsTypeVars = true;
+                 else if (t instanceof FunctionType) { t.paramTypes.forEach(checkVars); checkVars(t.returnType); }
+                 else if (t instanceof ArrayType) checkVars(t.elementType);
+                 else if (t instanceof TupleType) t.elementTypes.forEach(checkVars);
+                 else if (t instanceof RecordType) Array.from(t.fields.values()).forEach(checkVars);
+                 else if (t instanceof GenericType) t.typeArguments.forEach(checkVars);
+             };
+             checkVars(substitutedType);
 
-      this.hints.push({ context: ctx, type: substitutedType.toString() });
-      return substitutedType;
-    }
-
-    // Check if this is an ADT constructor
-    const constructor = this.getConstructors().find(
-      (c) => c.name === identifierName
-    );
-    if (constructor) {
-      // Apply any substitutions to the constructor type
-      const substitutedType = this.applySubstitution(
-        constructor.type,
-        this.currentSubstitution
-      );
-      this.hints.push({ context: ctx, type: substitutedType.toString() });
-
-      // Check if this constructor belongs to a generic type
-      const adtType = this.environment.getType(constructor.adtName);
-      if (adtType instanceof GenericType) {
-        // This is a constructor for a generic type
-        // Instantiate the generic type with fresh type variables
-        this.instantiateGenericType(adtType);
-
-        // Get the freshly instantiated constructor
-        const freshConstructor = this.constructors.find(
-          (c) => c.name === identifierName && c !== constructor
-        );
-
-        if (freshConstructor) {
-          return freshConstructor.type;
+             if (containsTypeVars) {
+                 // Potentially generic function found in env, instantiate it
+                 substitutedType = this.instantiateFunctionType(substitutedType);
+                 console.log(`[visitIdentifier] Instantiated function from env ${identifierName}: ${substitutedType}`);
+             }
         }
-      }
+        // Note: We are NOT instantiating GenericType references found directly in the environment here.
+        // Example: If `let x: Option<T> = ...`, looking up `x` should return the instantiated type.
+        // If looking up the type name `Option` itself, it should return the generic definition.
+        // The current logic applies substitution, which might be sufficient if `T` gets bound.
 
-      // Special case for no-argument constructors
-      if (
-        substitutedType instanceof FunctionType &&
-        substitutedType.paramTypes.length === 0
-      ) {
-        // For no-argument constructors, return the ADT type instead of the constructor type
-        return new AdtType(constructor.adtName);
-      }
-
-      // For constructors with arguments, return the constructor type
-      return substitutedType;
+        this.hints.push({ context: ctx, type: substitutedType.toString() });
+        return substitutedType; // Return type from env (potentially substituted and/or instantiated)
     }
 
+
+    // 2. Check if it's an ADT constructor
+    const constructor = this.getConstructors().find(c => c.name === identifierName);
+    if (constructor) {
+        const originalConstructorType = constructor.type; // e.g., (T) => Option<T>
+
+        // Check if the ADT itself is generic by looking up its definition
+        const adtDefinition = this.environment.getType(constructor.adtName); // e.g., Option<T>
+
+        let typeToReturn: ChicoryType;
+
+        // Check if the ADT definition is generic AND the constructor type actually uses type variables
+        if (adtDefinition instanceof GenericType && adtDefinition.typeArguments.length > 0 && originalConstructorType instanceof FunctionType) {
+            // It's a constructor of a generic ADT. Instantiate its type with fresh variables.
+            typeToReturn = this.instantiateFunctionType(originalConstructorType); // Use helper
+            console.log(`[visitIdentifier] Instantiated generic constructor ${identifierName}: ${originalConstructorType} -> ${typeToReturn}`);
+        } else {
+            // It's a constructor of a non-generic ADT, or a generic ADT with no params used in this constructor.
+            // Use its type directly. Do NOT apply currentSubstitution here.
+            typeToReturn = originalConstructorType;
+        }
+
+        // Handle the case where the constructor takes no arguments (e.g., None)
+        // The type checker should return the function type `() => Option<T1>`
+        // The compiler (`ChicoryVisitor.ts`) handles generating the direct object `{ type: "None" }` when it sees the identifier `None`.
+        // So, no special handling needed here for the type checker return value.
+
+        this.hints.push({ context: ctx, type: typeToReturn.toString() });
+        return typeToReturn;
+    }
+
+    // 3. Not found
     this.reportError(`Identifier '${identifierName}' is not defined.`, ctx);
     return UnknownType;
   }
@@ -1738,318 +1790,308 @@ export class ChicoryTypeChecker {
 
   visitCallExpr(
     ctx: parser.CallExprContext,
-    functionType: ChicoryType
+    functionType: ChicoryType // This is the type of the expression being called
   ): ChicoryType {
-    // Apply current substitutions to the function type
-    functionType = this.applySubstitution(
+    // Apply *outer* substitutions to the function type *before* doing anything else.
+    // This resolves any type variables bound *outside* the function call itself.
+    const substitutedFunctionType = this.applySubstitution(
       functionType,
-      this.currentSubstitution
+      this.currentSubstitution // Use the substitution context from *before* this call
     );
 
-    if (
-      !(functionType instanceof FunctionType) &&
-      !(functionType instanceof GenericType)
-    ) {
+    // Check if it's actually a function type after substitution
+    if (!(substitutedFunctionType instanceof FunctionType)) {
       this.reportError(
-        `Cannot call a non-function type: '${functionType}'`,
+        `Cannot call a non-function type: '${substitutedFunctionType}'`,
         ctx
       );
+      // Store UnknownType for this expression node before returning
+      this.expressionTypes.set(ctx, UnknownType);
+      this.hints.push({ context: ctx, type: UnknownType.toString() });
       return UnknownType;
     }
 
+    // It IS a FunctionType, proceed.
+    const funcType = substitutedFunctionType as FunctionType;
+
+    // Type check arguments in the current context.
+    // visitExpr uses/updates this.currentSubstitution internally for argument inference.
     const argumentTypes = ctx.expr()
       ? ctx.expr().map((expr) => this.visitExpr(expr))
       : [];
 
-    let expectedParamTypes: ChicoryType[] = [];
-    let returnType: ChicoryType = UnknownType;
+    // Apply current substitutions to argument types as well, as visitExpr might have updated them.
+    const substitutedArgumentTypes = argumentTypes.map(argType =>
+        this.applySubstitution(argType, this.currentSubstitution)
+    );
 
-    if (functionType instanceof FunctionType) {
-      expectedParamTypes = functionType.paramTypes;
-      returnType = functionType.returnType;
+    // Create a FRESH substitution map specific to *this function call*.
+    // This map will capture how type variables *within* the function signature
+    // are unified with the provided arguments.
+    const callSubstitution: SubstitutionMap = new Map();
 
-      // Check if this is a constructor call for a generic type
-      if (functionType.constructorName) {
-        const constructor = this.constructors.find(
-          (c) => c.name === functionType.constructorName
-        );
-        if (constructor) {
-          const adtType = this.environment.getType(constructor.adtName);
-          if (adtType instanceof GenericType) {
-            // Create a local substitution map for this constructor call
-            const localSubstitution = new Map<string, ChicoryType>();
-
-            // Unify the parameter types with the argument types to infer type variables
-            for (let i = 0; i < argumentTypes.length; i++) {
-              const paramType = expectedParamTypes[i];
-              const argType = argumentTypes[i];
-
-              const result = this.unify(paramType, argType, localSubstitution);
-              if (result instanceof Error) {
-                this.reportError(
-                  `Argument ${i + 1} type mismatch: ${result.message}`,
-                  ctx
-                );
-              }
-            }
-
-            // Apply the local substitution to the return type
-            returnType = this.applySubstitution(returnType, localSubstitution);
-
-            // If the return type is an AdtType, convert it to a GenericType with inferred arguments
-            if (
-              returnType instanceof AdtType &&
-              returnType.name === adtType.name
-            ) {
-              // Extract the inferred type arguments
-              const typeArgs = adtType.typeArguments.map((typeVar) => {
-                if (typeVar instanceof TypeVariable) {
-                  return localSubstitution.get(typeVar.name) || typeVar;
-                }
-                return typeVar;
-              });
-
-              // Create a new GenericType with the inferred type arguments
-              const inferredGenericType = new GenericType(
-                adtType.name,
-                typeArgs
-              );
-
-              // Add debug logging
-              console.log(
-                `[visitCallExpr] Inferred generic type: ${inferredGenericType}`
-              );
-              console.log(
-                `[visitCallExpr] Type arguments: ${typeArgs
-                  .map((t) => t.toString())
-                  .join(", ")}`
-              );
-
-              // For constructor calls, we need to ensure the type arguments are properly tracked
-              if (argumentTypes.length > 0) {
-                // If we have arguments, use the inferred type arguments calculated above
-                inferredGenericType.typeArguments = typeArgs;
-              }
-
-              return inferredGenericType;
-            }
-
-            return returnType;
-          }
-        }
-      }
-    } else if (functionType instanceof GenericType) {
-      // Handle generic function types
-      throw new Error("Not implemented generic type call expressions yet...");
-    }
-
-    // Create a local substitution map for this function call
-    const localSubstitution = new Map<string, ChicoryType>();
-
-    // Unify argument types with parameter types
-    if (argumentTypes.length !== expectedParamTypes.length) {
+    // Check arity (number of arguments)
+    if (substitutedArgumentTypes.length !== funcType.paramTypes.length) {
       this.reportError(
-        `Expected ${expectedParamTypes.length} arguments, but got ${argumentTypes.length}`,
+        `Expected ${funcType.paramTypes.length} arguments, but got ${substitutedArgumentTypes.length}`,
         ctx
       );
-    } else {
-      for (let i = 0; i < argumentTypes.length; i++) {
-        const result = this.unify(
-          expectedParamTypes[i],
-          argumentTypes[i],
-          localSubstitution
+      // Store UnknownType and return early on arity mismatch
+      this.expressionTypes.set(ctx, UnknownType);
+      this.hints.push({ context: ctx, type: UnknownType.toString() });
+      return UnknownType;
+    }
+
+    // Unify arguments with parameters using the call-specific substitution map (`callSubstitution`).
+    let unificationOk = true;
+    for (let i = 0; i < substitutedArgumentTypes.length; i++) {
+      // Unify the function's parameter type with the (substituted) argument type.
+      // The substitution map `callSubstitution` is updated by `unify`.
+      const result = this.unify(
+        funcType.paramTypes[i],       // Parameter type from the (potentially substituted) function signature
+        substitutedArgumentTypes[i],  // Argument type resolved in the current context
+        callSubstitution              // Update this map with bindings for type vars in funcType.paramTypes
+      );
+      if (result instanceof Error) {
+        unificationOk = false;
+        this.reportError(
+          `Argument ${i + 1} type mismatch: Cannot unify parameter type '${funcType.paramTypes[i]}' with argument type '${substitutedArgumentTypes[i]}'. ${result.message}`,
+          ctx.expr(i)! // Report error on the specific argument
         );
-        if (result instanceof Error) {
-          this.reportError(
-            `Argument ${i + 1} type mismatch: ${result.message}`,
-            ctx
-          );
+        // Continue checking other args even if one fails, to report all mismatches
+      }
+    }
+
+    // If any argument unification failed, the result type is Unknown
+    if (!unificationOk) {
+        this.expressionTypes.set(ctx, UnknownType);
+        this.hints.push({ context: ctx, type: UnknownType.toString() });
+        return UnknownType;
+    }
+
+    // Calculate the final return type by applying the call-specific substitution (`callSubstitution`)
+    // to the function's declared return type.
+    let finalReturnType = this.applySubstitution(funcType.returnType, callSubstitution);
+
+    // --- Special Handling for Generic Constructors ---
+    // If this was a call to a generic ADT constructor (like Some<T>),
+    // ensure the resulting type is correctly represented as GenericType<ConcreteArg(s)>.
+    if (funcType.constructorName && finalReturnType instanceof AdtType) {
+        const constructorDef = this.constructors.find(c => c.name === funcType.constructorName);
+        const adtDef = constructorDef ? this.environment.getType(constructorDef.adtName) : null;
+
+        // Check if the ADT definition is indeed generic
+        if (adtDef instanceof GenericType && adtDef.typeArguments.length > 0) {
+            // Resolve the ADT's type parameters (e.g., 'T' in Option<T>)
+            // using the `callSubstitution` derived from the arguments.
+            const concreteArgs = adtDef.typeArguments.map(typeVar => {
+                if (typeVar instanceof TypeVariable) {
+                    // Apply substitution recursively in case a type var maps to another type var etc.
+                    return this.applySubstitution(typeVar, callSubstitution);
+                }
+                // Should not happen for ADT def params, but return as is if not a TypeVariable
+                return typeVar;
+            });
+
+            // Check if all type variables were successfully resolved to concrete types
+            if (concreteArgs.some(arg => arg instanceof TypeVariable)) {
+                 // This indicates incomplete inference or an error.
+                 console.warn(`[visitCallExpr] Could not fully resolve type arguments for generic constructor ${funcType.constructorName}. Result: ${finalReturnType}, Inferred Args: ${concreteArgs}`);
+                 // Report an error? Or return partially resolved type? Let's return the GenericType with unresolved vars for now.
+                 finalReturnType = new GenericType(adtDef.name, concreteArgs);
+                 // Optionally report an error:
+                 // this.reportError(`Could not infer all type arguments for generic constructor ${funcType.constructorName}`, ctx);
+                 // finalReturnType = UnknownType;
+            } else {
+                 // Successfully resolved all type arguments. Create the concrete GenericType instance.
+                 finalReturnType = new GenericType(adtDef.name, concreteArgs);
+                 console.log(`[visitCallExpr] Resolved generic constructor call ${funcType.constructorName} to ${finalReturnType}`);
+            }
         }
-      }
+        // If adtDef wasn't GenericType or had no type arguments, finalReturnType remains as calculated before (likely AdtType).
     }
+    // --- End Special Handling ---
 
-    // Apply the local substitution to the return type
-    returnType = this.applySubstitution(returnType, localSubstitution);
 
-    // Merge the local substitution into the current substitution
-    // but only for variables that appear in the function type
-    for (const [varName, type] of localSubstitution.entries()) {
-      // Only add substitutions for variables that appear in the function type
-      if (this.variableAppearsIn(new TypeVariable(varName), functionType)) {
-        this.currentSubstitution.set(varName, type);
-      }
-    }
+    // Store and add hint for the final, calculated return type
+    this.expressionTypes.set(ctx, finalReturnType);
+    this.hints.push({ context: ctx, type: finalReturnType.toString() });
 
-    // Add a hint for debugging
-    this.hints.push({ context: ctx, type: returnType.toString() });
-
-    return returnType;
+    return finalReturnType;
   }
 
   visitMatchExpr(ctx: parser.MatchExprContext): ChicoryType {
+    // Type check the expression being matched
     const matchedType = this.visitExpr(ctx.expr());
+    const appliedMatchedType = this.applySubstitution(matchedType, this.currentSubstitution); // Apply substitutions early
 
-    // Add debug logging
-    console.log(`[visitMatchExpr] Matched type: ${matchedType}`);
+    // --- Setup for Exhaustiveness Check ---
+    let adtVariants: readonly string[] | null = null;
+    let isAdtMatch = false; // Flag to know if we need the check
+    let adtTypeNameForCheck: string | null = null; // Store the base name (e.g., "Option")
+
+    // Check for built-in generic ADTs (Option, Result) or user-defined ADTs
+    if (appliedMatchedType instanceof GenericType || appliedMatchedType instanceof AdtType) {
+        adtTypeNameForCheck = appliedMatchedType.name;
+
+        // Handle known built-ins specifically
+        if (adtTypeNameForCheck === 'Option') {
+            adtVariants = ['Some', 'None'];
+            isAdtMatch = true;
+            this.prelude.requireOptionType();
+        } else if (adtTypeNameForCheck === 'Result') {
+            // Assuming Result variants are 'Ok', 'Err'
+            adtVariants = ['Ok', 'Err'];
+            isAdtMatch = true;
+            // this.prelude.requireResultType(); // Assuming this exists
+        } else {
+            // Check if it's a user-defined ADT by looking up its constructors
+            const constructorsForType = this.constructors.filter(c => c.adtName === adtTypeNameForCheck);
+            if (constructorsForType.length > 0) {
+                adtVariants = constructorsForType.map(c => c.name);
+                isAdtMatch = true;
+            } else {
+                // It has a name like an ADT, but no constructors found. Might be an error elsewhere,
+                // or just not an ADT we can check exhaustiveness for.
+                console.warn(`[visitMatchExpr] Type '${adtTypeNameForCheck}' looks like an ADT but no constructors were found.`);
+            }
+        }
+    }
+    // Add checks here if you want to enforce exhaustiveness for other types like booleans
+    // else if (appliedMatchedType === BooleanType) { ... }
+
+    const fullyCoveredVariants = new Set<string>(); // Stores constructor names that are fully covered
+    let hasWildcard = false;
+    // --- End of Setup ---
 
     let returnTypes: ChicoryType[] = [];
-    const coveredCases: string[] = []; // for exhaustiveness check
-    const addCase = (str: string) => {
-      console.log(`[visitMatchExpr] Adding case: ${str}`);
-      coveredCases.push(str);
-    };
 
-    // Create a new scope for the match expression
-    this.environment = this.environment.pushScope();
-
+    // Process each match arm
     ctx.matchArm().forEach((arm) => {
-      const armReturnType = this.visitMatchArm(arm, matchedType, addCase);
-      returnTypes.push(armReturnType);
-    });
+      // Create a new scope for variables declared in the pattern
+      this.environment = this.environment.pushScope();
 
-    // Pop the match expression scope
-    this.environment = this.environment.popScope();
+      // --- Analyze Pattern for Exhaustiveness ---
+      const armPatternCtx = arm.matchPattern();
 
-    console.log(
-      `[visitMatchExpr] Covered cases: ${JSON.stringify(coveredCases)}`
-    );
-    console.log(matchedType);
-
-    // Exhaustiveness Check
-    let isExhaustive = true; // Assume exhaustive unless proven otherwise
-    let missingCases: string[] = [];
-
-    if (matchedType instanceof AdtType || matchedType instanceof GenericType) {
-      const baseTypeName = matchedType.name; // Both AdtType and GenericType have a 'name' property
-
-      // Get all constructors associated with the base type name *without modifying the global list*
-      const allConstructorsForType = this.getConstructors().filter(
-        (c) => c.adtName === baseTypeName
-      );
-
-      // Log the found constructors for debugging
-      console.log(
-        `[visitMatchExpr] Found constructors for ${baseTypeName}: ${allConstructorsForType.map(c => c.name).join(', ')}`
-      );
-      // console.log( // Optional: Log full types if needed
-      //   `[visitMatchExpr] Found constructor types: ${JSON.stringify(
-      //     allConstructorsForType.map((c) => c.type.toString())
-      //   )}`
-      // );
-
-      if (allConstructorsForType.length === 0 && baseTypeName !== 'Option' && baseTypeName !== 'Result') { // Don't warn for built-ins if prelude fails silently
-          console.warn(`[visitMatchExpr] Warning: No constructors found for type ${baseTypeName} during exhaustiveness check.`);
-          // Cannot determine exhaustiveness if constructors aren't found
-          isExhaustive = false; // Mark as potentially non-exhaustive
-      }
-
-      // Generate the list of possible case patterns based on the found constructors
-      const allPossibleCases = allConstructorsForType.map((c) => {
-        if (c.type instanceof FunctionType) {
-          if (c.type.paramTypes.length === 0) {
-            return c.name; // e.g., None
-          } else {
-            // Represent any parameterized constructor generically for exhaustiveness check
-            return `${c.name}(*)`; // e.g., Some(*)
+      if (isAdtMatch && !hasWildcard) { // Only track full coverage if relevant and no wildcard seen
+          if (armPatternCtx instanceof parser.WildcardMatchPatternContext) {
+              hasWildcard = true; // Wildcard covers everything
           }
+          // Add VariableMatchPatternContext check if you implement it
+          // else if (armPatternCtx instanceof parser.VariableMatchPatternContext) {
+          //    hasWildcard = true;
+          // }
+          else if (armPatternCtx instanceof parser.AdtWithParamMatchPatternContext) {
+              // Pattern like Some(val) - FULLY covers the 'Some' variant
+              const constructorName = armPatternCtx.IDENTIFIER()[0].getText();
+              if (constructorName) {
+                  // Optional: Check for redundancy if already covered
+                  // if (fullyCoveredVariants.has(constructorName)) { ... }
+                  fullyCoveredVariants.add(constructorName);
+              }
+          }
+          else if (armPatternCtx instanceof parser.AdtWithWildcardMatchPatternContext) {
+              // Pattern like Some(_) - FULLY covers the 'Some' variant
+              const constructorName = armPatternCtx.IDENTIFIER().getText();
+              if (constructorName) {
+                  fullyCoveredVariants.add(constructorName);
+              }
+          }
+          else if (armPatternCtx instanceof parser.BareAdtMatchPatternContext) {
+              // Pattern like None - FULLY covers the 'None' variant (as it takes no args)
+              const constructorName = armPatternCtx.IDENTIFIER().getText();
+              if (constructorName) {
+                  fullyCoveredVariants.add(constructorName);
+              }
+          }
+          else if (armPatternCtx instanceof parser.AdtWithLiteralMatchPatternContext) {
+              // Pattern like Some("42") - Does NOT fully cover 'Some'.
+              // Do nothing regarding fullyCoveredVariants.
+              const constructorName = armPatternCtx.IDENTIFIER().getText();
+              // Optional: Check if constructorName is valid for the ADT type (error reporting)
+              if (isAdtMatch && adtVariants && constructorName && !adtVariants.includes(constructorName)) {
+                   this.reportError(`Constructor '${constructorName}' does not belong to type '${adtTypeNameForCheck}'`, armPatternCtx);
+              }
+          }
+          else if (armPatternCtx instanceof parser.LiteralMatchPatternContext) {
+              // Pattern like "test" - Does not cover ADT variants.
+              // Do nothing regarding fullyCoveredVariants.
+          }
+      } // End if (isAdtMatch && !hasWildcard)
+
+      // If wildcard found, stop tracking coverage
+      if (hasWildcard) {
+          // Optional: break; if no other per-arm processing needed after finding wildcard
+      }
+      // --- End Pattern Analysis ---
+
+
+      // Type check the pattern itself (binds variables, checks types)
+      // Pass the *applied* matched type to visitPattern
+      // The addCase callback is now only used internally by visitPattern for debugging/logging if needed
+      this.visitPattern(armPatternCtx, appliedMatchedType, (caseStr) => { /* No-op or logging */ });
+
+      // Type check the expression of the arm
+      const armReturnType = this.visitExpr(arm.expr());
+      returnTypes.push(this.applySubstitution(armReturnType, this.currentSubstitution)); // Apply substitution to arm result
+
+      // Pop the scope for the pattern variables
+      this.environment = this.environment.popScope();
+    }); // End loop through arms
+
+
+    // --- Final Exhaustiveness Check ---
+    if (isAdtMatch && adtVariants && !hasWildcard) {
+        // Check which variants were NOT fully covered
+        const missingVariants = adtVariants.filter(v => !fullyCoveredVariants.has(v)); // Use fullyCoveredVariants
+
+        if (missingVariants.length > 0) {
+            this.reportError(
+                `Match expression on type '${adtTypeNameForCheck}' is not exhaustive. Missing cases: ${missingVariants.join(", ")}`,
+                ctx // Report error on the whole match expression context
+            );
+            // If non-exhaustiveness is a type error, return Unknown
+            // return UnknownType;
         }
-        return c.name; // Should not happen if constructors are FunctionTypes or the ADT type
-      });
-
-      console.log(
-        `[visitMatchExpr] All possible cases for ${baseTypeName}: ${allPossibleCases.join(', ')}`
-      );
-
-      // Check for uncovered cases
-      missingCases = allPossibleCases.filter((possibleCase) => {
-        // Is this possible case covered by any of the actual cases found in the arms?
-        return !coveredCases.some((coveredCase) => {
-          // Case 1: Exact match (e.g., None === None)
-          if (coveredCase === possibleCase) return true;
-
-          // Case 2: Wildcard covers everything
-          if (coveredCase === '*') return true;
-
-          // Case 3: Parameterized/Wildcard covers specific parameterized case
-          // e.g., covered 'Some(*)' should cover possible 'Some(*)'
-          // e.g., covered 'Some(variable)' should cover possible 'Some(*)'
-          // e.g., covered 'Some(Literal)' should cover possible 'Some(*)'
-          const coveredParts = coveredCase.match(/^(.*?)(?:\((.*)\))?$/); // Name or Name(content)
-          const possibleParts = possibleCase.match(/^(.*?)(?:\((.*)\))?$/);
-
-          if (coveredParts && possibleParts && coveredParts[1] === possibleParts[1]) {
-             // Names match (e.g., Some === Some)
-             // Does the covered case represent any form of parameterization (wildcard, variable, literal)?
-             if (coveredParts[2] !== undefined) { // coveredParts[2] is the content in parentheses
-                 // Does the possible case also represent parameterization?
-                 if (possibleParts[2] === '*') {
-                     return true; // Covered parameterized case handles the general possible parameterized case
-                 }
-             }
-          }
-          return false;
-        });
-      });
-
-      if (missingCases.length > 0 && !coveredCases.includes('*')) { // Only non-exhaustive if no wildcard covers the rest
-        isExhaustive = false;
-      }
-
-    } else if (matchedType instanceof StringTypeClass || matchedType === StringType) {
-      // String exhaustiveness: requires wildcard or variable pattern
-      const hasWildcard = coveredCases.includes('*');
-      const hasVariable = coveredCases.some(c => c.startsWith('variable(')); // Assuming addCase uses "variable(name)" marker
-      if (!hasWildcard && !hasVariable) {
-        isExhaustive = false;
-        missingCases = ['_ (wildcard or variable)']; // Indicate what's missing
-      }
-    } else if (matchedType === NumberType || matchedType === BooleanType) {
-         // Similar check for numbers/booleans: need wildcard or variable if not all literals covered
-         const hasWildcard = coveredCases.includes('*');
-         const hasVariable = coveredCases.some(c => c.startsWith('variable('));
-         // A full check would require seeing if all possible literal values (true/false) are covered,
-         // which is complex. For now, just require wildcard/variable for guaranteed exhaustiveness.
-         if (!hasWildcard && !hasVariable) {
-             // We can't be certain it's exhaustive without listing all literals
-             // Let's not report an error, but maybe a warning or hint later?
-             // For now, assume okay if specific literals are matched.
-         }
     }
-    // Add checks for other matchable types like Tuples, Records if needed
-
-    // Report error if determined to be non-exhaustive
-    if (!isExhaustive) {
-       this.reportError(
-         `Match expression on type '${matchedType}' may not be exhaustive. Missing cases: ${missingCases.join(", ")}`,
-         ctx
-       );
-    }
-    // --- End Exhaustiveness Check ---
+    // Add similar checks here for boolean, etc., if required
+    // else if (appliedMatchedType === BooleanType && !hasWildcard) {
+    //     const needsTrue = !coveredCases.has('true');
+    //     const needsFalse = !coveredCases.has('false');
+    //     if (needsTrue || needsFalse) { ... report error ... }
+    // }
+    // --- End Final Check ---
 
 
-    /**
-     * TODO: Check that all arms are possible to reach:
-     * It's meaningless to have:
-     *    match (X) {
-     *        Arm(_) => "wildcard"
-     *        Arm(y) => "variable"
-     *    }
-     * because the first arm matches everything the second arm would.
-     */
-
-    // Check that all arms return the same type
-    const firstType = returnTypes[0] || UnknownType;
-    for (let i = 1; i < returnTypes.length; i++) {
-      if (!typesAreEqual(firstType, returnTypes[i])) {
-        this.reportError(
-          `Match arms must all return the same type. Expected '${firstType}', found '${returnTypes[i]}'`,
-          ctx.matchArm()[i]
-        );
-        return UnknownType;
-      }
+    // Check that all arms return the same type (Unification)
+    let finalArmType: ChicoryType = UnknownType;
+    if (returnTypes.length > 0) {
+        finalArmType = returnTypes[0]; // Start with the first arm's type
+        for (let i = 1; i < returnTypes.length; i++) {
+            const unificationResult = this.unify(finalArmType, returnTypes[i], this.currentSubstitution);
+            if (unificationResult instanceof Error) {
+                this.reportError(
+                    `Match arms must return compatible types. Expected '${finalArmType}', found '${returnTypes[i]}'. ${unificationResult.message}`,
+                    ctx.matchArm(i)!.expr() // Report error on the expression of the mismatched arm
+                );
+                finalArmType = UnknownType; // Set to Unknown on mismatch
+                break; // Stop checking further arms after first mismatch
+            } else {
+                // Unification might refine the type (e.g., bind type variables)
+                finalArmType = this.applySubstitution(unificationResult, this.currentSubstitution);
+            }
+        }
+    } else {
+        // Match expression with no arms? Should be a parser error, but handle defensively.
+        this.reportError("Match expression has no arms.", ctx);
+        finalArmType = UnknownType;
     }
 
-    return firstType;
+    // Apply final substitutions to the unified type
+    finalArmType = this.applySubstitution(finalArmType, this.currentSubstitution);
+    this.hints.push({ context: ctx, type: finalArmType.toString() }); // Add hint for the whole match expression
+    return finalArmType;
   }
 
   visitMatchArm(
@@ -2067,7 +2109,7 @@ export class ChicoryTypeChecker {
   visitPattern(
     ctx: parser.MatchPatternContext,
     matchedType: ChicoryType,
-    addCase: (str: string) => void // Accepts string
+    addCase: (str: string) => void // Accepts string - Now primarily for logging/debugging within this method
   ): void {
     // Apply substitution to matchedType *before* checking its instance type
     const substitution: SubstitutionMap = new Map(); // Local substitution for pattern checks if needed

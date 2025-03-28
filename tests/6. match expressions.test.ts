@@ -51,3 +51,24 @@ test("match a string literal", () => {
     }
 })();`);
 });
+
+
+test("Ensure coverage for Option type", () => {
+    const { code,errors } = compile(`match (Some("test")) {
+      None => { "nothing" }
+      Some("42") => { "forty two" }
+      // Some(x) => "any other value"
+  }`);  
+  expect(errors.length).toBe(1)
+});
+  
+test("Ensure coverage for ADT", () => {
+    const { code,errors } = compile(`
+        type Test = One | Two
+        match (One) {
+            One => "yup"
+            // Two => "nope
+        }`);
+  expect(errors.length).toBe(1)
+});
+  
