@@ -39,7 +39,7 @@ const file = Bun.file(filePath);
 const source = await file.text();
 
 console.log(yellow(" ⚡ Compiling Chicory Source ⚡"));
-const { code, errors } = compile(source) || { code: "", errors: [] };
+const { code, errors } = compile(source, filePath) || { code: "", errors: [] };
 
 if (errors.length > 0) {
   console.error(errors.map((error, index) => 

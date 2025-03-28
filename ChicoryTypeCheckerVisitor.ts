@@ -387,7 +387,7 @@ export class ChicoryTypeChecker {
   // Main entry point for type checking
   check(
     ctx: parser.ProgramContext,
-    filePath: string | null, // Absolute path of the file to check
+    filePath: string, // Absolute path of the file to check
     readFile: (filePath: string) => string, // Function to read file content
     compilationCache: CompilationCache, // Shared cache
     processingFiles: ProcessingFiles // Shared set for cycle detection
@@ -399,7 +399,7 @@ export class ChicoryTypeChecker {
     exports: Map<string, ChicoryType>;
   } {
     // --- Setup ---
-    this.currentFilePath = filePath || "__entrypoint__";
+    this.currentFilePath = filePath;
     this.readFile = readFile;
     this.compilationCache = compilationCache;
     this.processingFiles = processingFiles;

@@ -10,6 +10,7 @@ import {
 } from "./ChicoryTypes";
 
 export class ChicoryParserVisitor {
+  private filename: string;
   private typeChecker: ChicoryTypeChecker;
   private indentLevel: number = 0;
   private scopeLevel: number = 0;
@@ -18,8 +19,9 @@ export class ChicoryParserVisitor {
   private hints: TypeHintWithContext[] = [];
   private expressionTypes: Map<ParserRuleContext, ChicoryType> = new Map();
 
-  constructor(typeChecker?: ChicoryTypeChecker) {
+  constructor(typeChecker: ChicoryTypeChecker, filename: string) {
     this.typeChecker = typeChecker || new ChicoryTypeChecker();
+    this.filename = filename;
   }
 
   // Utility to generate consistent indentation
@@ -164,11 +166,11 @@ export class ChicoryParserVisitor {
     let fromPath = fromPathRaw.substring(1, fromPathRaw.length - 1);
 
     // Check if it's a Chicory import based on the original path
-    const isChicoryImport = fromPath.endsWith(".chic");
-    if (isChicoryImport) {
-      fromPath = fromPath.replace(/\.chic$/, ".js");
-    }
-    const jsFromPath = `"${fromPath}"`;
+    // const isChicoryImport = fromPath.endsWith(".chic");
+    // if (isChicoryImport) {
+    //   fromPath = fromPath.replace(/\.chic$/, ".js");
+    // }
+    // const jsFromPath = `"${fromPath}"`;
 
     if (ctx instanceof parser.ImportStatementContext) {
       const defaultImport = ctx.IDENTIFIER() ? ctx.IDENTIFIER()!.getText() : "";
@@ -178,7 +180,8 @@ export class ChicoryParserVisitor {
           )
         : "";
       const body = [defaultImport, destructuring].filter(Boolean).join(", ");
-      return this.indent() + `import ${body} from ${jsFromPath}`;
+    //   return this.indent() + `import ${body} from ${jsFromPath}`;
+      return this.indent() + `import ${body} from "${fromPath}"`;
     } else if (ctx instanceof parser.BindStatementContext) {
       const defaultImport = ctx.IDENTIFIER() ? ctx.IDENTIFIER()!.getText() : "";
       const destructuring = ctx.bindingImportIdentifier()
@@ -660,7 +663,7 @@ export class ChicoryParserVisitor {
     const { errors, hints, expressionTypes, prelude } =
       this.typeChecker.check(
         ctx, 
-        null,
+        this.filename,
         (fp) => readFileSync(fp, "utf-8"),
         new Map(),
         new Set()

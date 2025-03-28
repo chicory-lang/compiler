@@ -64,7 +64,7 @@ export type CompileResult = {
     hints: TypeHint[];
 }
 
-export default (source: string): CompileResult => {
+export default (source: string, path?: string): CompileResult => {
     if (!source.trim()) {
         return { code: "", errors: [], hints: [] }
     }
@@ -85,7 +85,7 @@ export default (source: string): CompileResult => {
     const typeChecker = new ChicoryTypeChecker();
     
     // Create visitor with the type checker
-    const visitor = new ChicoryParserVisitor(typeChecker);
+    const visitor = new ChicoryParserVisitor(typeChecker, path || "__main__");
 
     let code: string = ""
     let errors: LspDiagnostic[] = []
