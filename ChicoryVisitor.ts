@@ -77,16 +77,27 @@ export class ChicoryParserVisitor {
 
     let targetJs: string;
     if (targetCtx.IDENTIFIER()) {
-        targetJs = targetCtx.IDENTIFIER()!.getText();
+      targetJs = targetCtx.IDENTIFIER()!.getText();
     } else if (targetCtx.recordDestructuringPattern()) {
-        const identifiers = targetCtx.recordDestructuringPattern()!.IDENTIFIER().map(id => id.getText()).join(', ');
-        targetJs = `{ ${identifiers} }`;
+      const identifiers = targetCtx
+        .recordDestructuringPattern()!
+        .IDENTIFIER()
+        .map((id) => id.getText())
+        .join(", ");
+      targetJs = `{ ${identifiers} }`;
     } else if (targetCtx.arrayDestructuringPattern()) {
-        const identifiers = targetCtx.arrayDestructuringPattern()!.IDENTIFIER().map(id => id.getText()).join(', ');
-        targetJs = `[ ${identifiers} ]`;
+      const identifiers = targetCtx
+        .arrayDestructuringPattern()!
+        .IDENTIFIER()
+        .map((id) => id.getText())
+        .join(", ");
+      targetJs = `[ ${identifiers} ]`;
     } else {
-        targetJs = `/* ERROR: Unknown assignment target */`;
-        this.reportError(`Unknown assignment target type during compilation: ${targetCtx.getText()}`, targetCtx);
+      targetJs = `/* ERROR: Unknown assignment target */`;
+      this.reportError(
+        `Unknown assignment target type during compilation: ${targetCtx.getText()}`,
+        targetCtx
+      );
     }
     return `${this.indent()}${assignKwd} ${targetJs} = ${expr}`;
   }
@@ -259,36 +270,35 @@ export class ChicoryParserVisitor {
         return `${baseJs}[${indexExprJs}]`;
       }
     } else if (ctx.ruleContext instanceof parser.CallExpressionContext) {
-        const callCtx = (ctx as parser.CallExpressionContext).callExpr();
-        const args = callCtx.expr()
-          ? callCtx
-              .expr()
-              .map((expr) => this.visitExpr(expr))
-              .join(", ")
-          : "";
+      const callCtx = (ctx as parser.CallExpressionContext).callExpr();
+      const args = callCtx.expr()
+        ? callCtx
+            .expr()
+            .map((expr) => this.visitExpr(expr))
+            .join(", ")
+        : "";
 
-        // ---> START REPLACEMENT <---
+      // ---> START REPLACEMENT <---
 
-        // Get the type inferred by the type checker for the *result* of this specific call expression node
-        const resultType = this.expressionTypes.get(ctx); // ctx is the TailExprContext wrapping CallExpressionContext
+      // Get the type inferred by the type checker for the *result* of this specific call expression node
+      const resultType = this.expressionTypes.get(ctx); // ctx is the TailExprContext wrapping CallExpressionContext
 
-        // Check if the result type is Option<...> AND if the method being called is find or findIndex
-        if (resultType instanceof GenericType && resultType.name === "Option") {
-            // Check the actual method name stored in baseJs (e.g., "myArray.find")
-            if (baseJs.endsWith(".find")) {
-                return `((__res) => __res === undefined ? None() : Some(__res))(${baseJs}(${args}))`;
-            } else if (baseJs.endsWith(".findIndex")) {
-                return `((__res) => __res === -1 ? None() : Some(__res))(${baseJs}(${args}))`;
-            }
-            // If other Option-returning methods are added, handle them here.
+      // Check if the result type is Option<...> AND if the method being called is find or findIndex
+      if (resultType instanceof GenericType && resultType.name === "Option") {
+        // Check the actual method name stored in baseJs (e.g., "myArray.find")
+        if (baseJs.endsWith(".find")) {
+          return `((__res) => __res === undefined ? None() : Some(__res))(${baseJs}(${args}))`;
+        } else if (baseJs.endsWith(".findIndex")) {
+          return `((__res) => __res === -1 ? None() : Some(__res))(${baseJs}(${args}))`;
         }
+        // If other Option-returning methods are added, handle them here.
+      }
 
-        // Default case: Not an Option-returning array method we handle specially,
-        // or type information was missing. Generate standard function call syntax.
-        return `${baseJs}(${args})`;
+      // Default case: Not an Option-returning array method we handle specially,
+      // or type information was missing. Generate standard function call syntax.
+      return `${baseJs}(${args})`;
 
-        // ---> END REPLACEMENT <---
-
+      // ---> END REPLACEMENT <---
     } else if (ctx.ruleContext instanceof parser.OperationExpressionContext) {
       const op = (ctx as parser.OperationExpressionContext)
         .OPERATOR()
@@ -387,26 +397,26 @@ export class ChicoryParserVisitor {
 
   visitFuncExpr(ctx: parser.FuncExprContext): string {
     this.enterScope();
-    
-    const params: string[] = []
-    if (ctx instanceof parser.ParenFunctionExpressionContext && ctx.parameterList()) {
-        params.push(...this.visitParameterList(ctx.parameterList()!))
+
+    const params: string[] = [];
+    if (
+      ctx instanceof parser.ParenFunctionExpressionContext &&
+      ctx.parameterList()
+    ) {
+      params.push(...this.visitParameterList(ctx.parameterList()!));
+    } else if (ctx instanceof parser.ParenlessFunctionExpressionContext) {
+      params.push(ctx.IDENTIFIER().getText());
     }
-    else if (ctx instanceof parser.ParenlessFunctionExpressionContext) {
-        params.push(ctx.IDENTIFIER().getText())
-    }
-    
+
     // @ts-expect-error TS can't tell that ctx will always have an expr. But we know it will because there are only two options and both have one expr.
-    const body = this.visitExpr(ctx.expr()!)
-    
+    const body = this.visitExpr(ctx.expr()!);
+
     this.exitScope();
     return `(${params.join(", ")}) => ${body}`;
   }
 
   visitParameterList(ctx: parser.ParameterListContext): string[] {
-    return ctx
-      .IDENTIFIER()
-      .map((id) => id.getText());
+    return ctx.IDENTIFIER().map((id) => id.getText());
   }
 
   visitCallExpr(ctx: parser.CallExprContext): string {
