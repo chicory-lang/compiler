@@ -70,12 +70,12 @@ genericTypeExpr
     ;
 
 importStmt
-    : 'import' IDENTIFIER 'from' STRING
-    | 'import' IDENTIFIER ',' destructuringImportIdentifier 'from' STRING
-    | 'import' destructuringImportIdentifier 'from' STRING
-    | 'bind' IDENTIFIER 'as' typeExpr 'from' STRING
-    | 'bind' bindingImportIdentifier 'from' STRING
-    | 'bind' IDENTIFIER 'as' typeExpr ',' bindingImportIdentifier 'from' STRING
+    : 'import' IDENTIFIER 'from' STRING                                     #ImportStatement
+    | 'import' IDENTIFIER ',' destructuringImportIdentifier 'from' STRING   #ImportStatement
+    | 'import' destructuringImportIdentifier 'from' STRING                  #ImportStatement
+    | 'bind' IDENTIFIER 'as' typeExpr 'from' STRING                         #BindStatement
+    | 'bind' bindingImportIdentifier 'from' STRING                          #BindStatement
+    | 'bind' IDENTIFIER 'as' typeExpr ',' bindingImportIdentifier 'from' STRING #BindStatement
     ;
 
 destructuringImportIdentifier:

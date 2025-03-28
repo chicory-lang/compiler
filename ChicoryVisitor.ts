@@ -1,8 +1,13 @@
+import { readFileSync } from "fs";
 import { ParserRuleContext } from "antlr4ng";
 import * as parser from "./generated/ChicoryParser";
 import { ChicoryTypeChecker } from "./ChicoryTypeCheckerVisitor";
-import { CompilationError, TypeHintWithContext } from "./env";
-import { ArrayType, ChicoryType, FunctionType, GenericType } from "./ChicoryTypes";
+import { CompilationError, TypeHintWithContext, ChicoryType } from "./env";
+import {
+  ArrayType,
+  FunctionType,
+  GenericType,
+} from "./ChicoryTypes";
 
 export class ChicoryParserVisitor {
   private typeChecker: ChicoryTypeChecker;
@@ -136,8 +141,25 @@ export class ChicoryParserVisitor {
   }
 
   visitImportStmt(ctx: parser.ImportStmtContext): string {
-    // Handle regular imports
-    if (ctx.getText().startsWith("import")) {
+    if (
+      !(
+        ctx instanceof parser.ImportStatementContext ||
+        ctx instanceof parser.BindStatementContext
+      )
+    ) {
+      throw new Error("Invalid import statement");
+    }
+    const fromPathRaw = ctx.STRING().getText();
+    let fromPath = fromPathRaw.substring(1, fromPathRaw.length - 1);
+
+    // Check if it's a Chicory import based on the original path
+    const isChicoryImport = fromPath.endsWith(".chic");
+    if (isChicoryImport) {
+      fromPath = fromPath.replace(/\.chic$/, ".js");
+    }
+    const jsFromPath = `"${fromPath}"`;
+
+    if (ctx instanceof parser.ImportStatementContext) {
       const defaultImport = ctx.IDENTIFIER() ? ctx.IDENTIFIER()!.getText() : "";
       const destructuring = ctx.destructuringImportIdentifier()
         ? this.visitDestructuringImportIdentifier(
@@ -145,12 +167,8 @@ export class ChicoryParserVisitor {
           )
         : "";
       const body = [defaultImport, destructuring].filter(Boolean).join(", ");
-      const from = ctx.STRING().getText();
-      return `${this.indent()}import ${body} from ${from}`;
-    }
-
-    // Handle binding imports
-    else if (ctx.getText().startsWith("bind")) {
+      return this.indent() + `import ${body} from ${jsFromPath}`;
+    } else if (ctx instanceof parser.BindStatementContext) {
       const defaultImport = ctx.IDENTIFIER() ? ctx.IDENTIFIER()!.getText() : "";
       const destructuring = ctx.bindingImportIdentifier()
         ? this.visitBindingImportIdentifier(ctx.bindingImportIdentifier()!)
@@ -629,8 +647,15 @@ export class ChicoryParserVisitor {
     this.scopeLevel = 0; // Reset scope level
     this.expressionTypes.clear(); // Clear type map
 
-    const { errors, hints, expressionTypes, prelude } = this.typeChecker.check(ctx);
-    this.expressionTypes = expressionTypes
+    const { errors, hints, expressionTypes, prelude } =
+      this.typeChecker.check(
+        ctx, 
+        null,
+        (fp) => readFileSync(fp, "utf-8"),
+        new Map(),
+        new Set()
+    );
+    this.expressionTypes = expressionTypes;
 
     const typeErrors = errors.map((err) => ({
       message: `Type Error: ${err.message}`,

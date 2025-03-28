@@ -1,8 +1,9 @@
-import { ParserRuleContext } from "antlr4ng";
+import { CharStream, CommonTokenStream, ParserRuleContext } from "antlr4ng";
+import { ChicoryLexer } from "./generated/ChicoryLexer";
+import { ChicoryParser } from "./generated/ChicoryParser";
+import * as path from "path";
 import * as parser from "./generated/ChicoryParser";
-import { ChicoryVisitor as ChicoryParserBaseVisitor } from "./generated/ChicoryVisitor"; // Assuming a base visitor is generated
 import {
-  ChicoryType,
   ConstructorDefinition,
   StringType,
   NumberType,
@@ -16,14 +17,19 @@ import {
   typesAreEqual,
   GenericType,
   TypeVariable,
-  StringTypeClass,
   ArrayType,
 } from "./ChicoryTypes";
 import { TypeEnvironment } from "./TypeEnvironment";
-import { CompilationError, TypeHint, TypeHintWithContext } from "./env";
+import {
+  CompilationError,
+  SubstitutionMap,
+  TypeHintWithContext,
+  ChicoryType,
+  CompilationCache,
+  ProcessingFiles,
+  CompilationCacheEntry,
+} from "./env";
 import { Prelude } from "./Prelude";
-
-type SubstitutionMap = Map<string, ChicoryType>;
 
 export class ChicoryTypeChecker {
   private environment: TypeEnvironment;
@@ -34,6 +40,11 @@ export class ChicoryTypeChecker {
   private currentSubstitution: SubstitutionMap = new Map();
   private expressionTypes: Map<ParserRuleContext, ChicoryType> = new Map();
   private prelude: Prelude;
+  private currentFilePath: string = "";
+  private readFile: (filePath: string) => string;
+  private compilationCache: CompilationCache = new Map();
+  private processingFiles: ProcessingFiles = new Set();
+  private exportedBindings: Map<string, ChicoryType> = new Map();
 
   constructor() {
     this.environment = new TypeEnvironment(null); // Initialize with the global scope
@@ -374,37 +385,103 @@ export class ChicoryTypeChecker {
   }
 
   // Main entry point for type checking
-  check(ctx: parser.ProgramContext): {
+  check(
+    ctx: parser.ProgramContext,
+    filePath: string | null, // Absolute path of the file to check
+    readFile: (filePath: string) => string, // Function to read file content
+    compilationCache: CompilationCache, // Shared cache
+    processingFiles: ProcessingFiles // Shared set for cycle detection
+  ): {
     errors: CompilationError[];
     hints: TypeHintWithContext[];
     expressionTypes: Map<ParserRuleContext, ChicoryType>;
     prelude: Prelude;
+    exports: Map<string, ChicoryType>;
   } {
-    this.environment = new TypeEnvironment(null); // Reset to global scope
-    this.prelude = new Prelude(); // Reset prelude tracker
+    // --- Setup ---
+    this.currentFilePath = filePath || "__entrypoint__";
+    this.readFile = readFile;
+    this.compilationCache = compilationCache;
+    this.processingFiles = processingFiles;
+
+    // Reset for this check
+    this.environment = new TypeEnvironment(null);
+    this.prelude = new Prelude();
     this.initializePrelude();
-    this.errors = []; // Reset errors
-    this.hints = []; // Reset hints
-    // Reset constructors - but keep prelude ones!
-    this.constructors = this.constructors.filter(c => c.adtName === 'Option' || c.adtName === 'Result'); // Keep built-ins
-    this.currentSubstitution = new Map(); // Reset substitution
-    this.nextTypeVarId = 0; // Reset type variable counter
+    this.errors = [];
+    this.hints = [];
+    this.constructors = this.constructors.filter(
+      (c) => c.adtName === "Option" || c.adtName === "Result"
+    ); // Keep built-ins
+    this.currentSubstitution = new Map();
+    this.nextTypeVarId = 0;
     this.expressionTypes.clear();
+    this.exportedBindings = new Map();
 
-    this.visitProgram(ctx);
+    // --- Cycle Detection ---
+    if (this.processingFiles.has(this.currentFilePath)) {
+      // This is a simplified check. A more robust one might allow the file
+      // to be revisited if its exports are already computed.
+      this.reportError(
+        `Circular dependency detected: File ${this.currentFilePath} is already being processed.`,
+        ctx
+      );
+      // Return minimal info to break the cycle
+      return {
+        errors: this.errors,
+        hints: [],
+        expressionTypes: new Map(),
+        prelude: this.prelude,
+        exports: new Map(),
+      };
+    }
+    this.processingFiles.add(this.currentFilePath);
 
-    return {
+    // --- Main Analysis ---
+    try {
+      // Type check the current file based on the known context
+      this.visitProgram(ctx);
+    } catch (e) {
+      // Catch unexpected errors during analysis
+      this.reportError(
+        `Internal error during analysis of ${this.currentFilePath}: ${
+          e instanceof Error ? e.message : String(e)
+        }`,
+        ctx
+      );
+    }
+
+    // --- Teardown ---
+    this.processingFiles.delete(this.currentFilePath);
+
+    // --- Result ---
+    const result = {
       errors: this.errors,
       hints: this.hints,
       expressionTypes: this.expressionTypes,
-      prelude: this.prelude, // Return the prelude object
+      prelude: this.prelude,
+      exports: this.exportedBindings,
     };
+
+    // Store result in cache *before* returning
+    this.compilationCache.set(this.currentFilePath, {
+      exports: result.exports,
+      errors: result.errors,
+      // Potentially cache hints/prelude if needed across files, but exports/errors are primary
+    });
+
+    return result;
   }
 
   visitProgram(ctx: parser.ProgramContext): ChicoryType {
+    // We don't need to store any types here, we just need to process the
+    // tree to perform unifications etc. and make sure that we know what
+    // we're exporting
     ctx.stmt().forEach((stmt) => this.visitStmt(stmt));
-    // Optionally handle exportStmt if needed
-    return UnitType; // Program itself doesn't have a type
+    if (ctx.exportStmt()) {
+      this.visitExportStmt(ctx.exportStmt()!);
+    }
+    return UnitType;
   }
 
   visitStmt(ctx: parser.StmtContext): ChicoryType {
@@ -852,40 +929,199 @@ export class ChicoryTypeChecker {
   }
 
   visitImportStmt(ctx: parser.ImportStmtContext): ChicoryType {
-    // Simplified handling for now - declare imported identifiers as UnknownType
-    if (ctx.IDENTIFIER()) {
-      this.environment.declare(
-        ctx.IDENTIFIER()!.getText(),
-        UnknownType,
-        ctx,
-        (str) => this.reportError(str, ctx)
-      );
-    }
-    if (ctx.destructuringImportIdentifier()) {
-      ctx
-        .destructuringImportIdentifier()!
-        .IDENTIFIER()
-        .forEach((id) => {
-          this.environment.declare(id.getText(), UnknownType, ctx, (str) =>
-            this.reportError(str, ctx)
-          );
-        });
+    if (
+      !(
+        ctx instanceof parser.ImportStatementContext ||
+        ctx instanceof parser.BindStatementContext
+      )
+    ) {
+      throw new Error("Invalid import statement");
     }
 
-    if (ctx.bindingImportIdentifier()) {
-      ctx
-        .bindingImportIdentifier()!
-        .bindingIdentifier()
-        .forEach((binding) => {
-          // Should use the type but we aren't handling this yet
-          const typeName = binding.IDENTIFIER().getText();
-          const type = this.visitTypeExpr(binding.typeExpr());
-          this.environment.declare(typeName, type, ctx, (str) =>
-            this.reportError(str, ctx)
-          );
-        });
+    if (ctx instanceof parser.BindStatementContext) {
+      if (ctx.IDENTIFIER()) {
+        // There will definitely be a typeExpr if there is an IDENTIFIER (for bind statements)
+        const type = this.visitTypeExpr(ctx.typeExpr()!);
+        this.environment.declare(
+          ctx.IDENTIFIER()!.getText(),
+          type,
+          ctx,
+          (str) => this.reportError(str, ctx)
+        );
+      }
+
+      if (ctx.bindingImportIdentifier()) {
+        ctx
+          .bindingImportIdentifier()!
+          .bindingIdentifier()
+          .forEach((bindingId) => {
+            const id = bindingId.IDENTIFIER().getText();
+            const type = this.visitTypeExpr(bindingId.typeExpr());
+            this.environment.declare(id, type, ctx, (str) =>
+              this.reportError(str, ctx)
+            );
+          });
+      }
+      
+      return UnitType;
     }
+
+    let fromPathRaw = ctx.STRING().getText(); // e.g., '"./other.chic"' or '"lodash"'
+    const fromPath = fromPathRaw.substring(1, fromPathRaw.length - 1); // Remove quotes
+
+    if (fromPath.endsWith(".chic")) {
+      const importerDir = path.dirname(this.currentFilePath);
+      const absoluteImportPath = path.resolve(importerDir, fromPath);
+
+      let importedData: CompilationCacheEntry | undefined =
+        this.compilationCache.get(absoluteImportPath);
+
+      if (!importedData) {
+        // Not in cache, need to parse and check the imported file
+        try {
+          const importedFileContent = this.readFile(absoluteImportPath);
+
+          const inputStream = CharStream.fromString(importedFileContent);
+          const lexer = new ChicoryLexer(inputStream);
+          // TODO: Add Error Listener to lexer/parser for imported file syntax errors
+          const tokenStream = new CommonTokenStream(lexer);
+          const importedParser = new ChicoryParser(tokenStream);
+          const importedTree = importedParser.program();
+
+          // Create a *new* checker instance for the imported file
+          // It shares the cache and processing set, but has its own environment etc.
+          const importedChecker =
+            new ChicoryTypeChecker(/* pass necessary initial state if any */);
+          const analysisResult = importedChecker.check(
+            importedTree,
+            absoluteImportPath,
+            this.readFile, // Pass down the reader
+            this.compilationCache, // Pass down the cache
+            this.processingFiles // Pass down the processing set
+          );
+
+          // The result is now in the cache, retrieve it
+          importedData = this.compilationCache.get(absoluteImportPath);
+
+          // Aggregate errors from the imported file into the current one
+          if (analysisResult.errors.length > 0) {
+            analysisResult.errors.forEach((err) => {
+              // Modify error message to indicate origin?
+              this.errors.push({
+                ...err,
+                message: `(From ${path.basename(absoluteImportPath)}) ${
+                  err.message
+                }`,
+              });
+            });
+          }
+        } catch (e) {
+          this.reportError(
+            `Failed to read or parse imported file: ${absoluteImportPath}. ${
+              e instanceof Error ? e.message : String(e)
+            }`,
+            ctx
+          );
+          // Mark as processed with error in cache? Or just return?
+          // For now, just report error and continue.
+          return UnitType;
+        }
+      }
+
+      // If we still don't have data (e.g., read error, circular dependency detected earlier)
+      if (!importedData) {
+        this.reportError(
+          `Could not load exports from ${fromPath}. Check for errors in that file or circular dependencies.`,
+          ctx
+        );
+        return UnitType;
+      }
+
+      // --- Add imported bindings to the current environment ---
+      const availableExports = importedData.exports;
+
+      // Handle default import (if syntax allows later)
+      // if (ctx.IDENTIFIER() && !ctx.destructuringImportIdentifier()) { ... }
+
+      // Handle named imports
+      if (ctx.destructuringImportIdentifier()) {
+        ctx
+          .destructuringImportIdentifier()!
+          .IDENTIFIER()
+          .forEach((idNode) => {
+            const importName = idNode.getText();
+            if (availableExports.has(importName)) {
+              const importedType = availableExports.get(importName)!;
+              // TODO: Handle potential generic instantiation if needed here?
+              // For now, declare with the type as stored in exports.
+              this.environment.declare(importName, importedType, null, (str) =>
+                this.reportError(str, ctx)
+              );
+              this.hints.push({
+                context: ctx,
+                type: importedType.toString(),
+              });
+            } else {
+              this.reportError(
+                `Module "${fromPath}" does not export "${importName}".`,
+                ctx
+              );
+              // Declare as Unknown to prevent cascade errors
+              this.environment.declare(importName, UnknownType, null, (str) =>
+                this.reportError(str, ctx)
+              );
+            }
+          });
+      }
+      // Handle import * (if syntax allows later)
+      // else if (ctx.ASTERISK()) { ... }
+    } else {
+      // Treat as a JS import if not ending in .chic and not using 'bind'
+      // This might need refinement based on desired behavior.
+      // For now, assume non-`.chic` imports without `bind` are errors or need specific handling.
+      this.reportError(
+        `Unsupported import path: ${fromPathRaw}. Use 'bind' for JS modules or ensure Chicory files end with '.chic'.`,
+        ctx
+      );
+      // Declare imports as UnknownType if needed
+      if (ctx.destructuringImportIdentifier()) {
+        ctx
+          .destructuringImportIdentifier()!
+          .IDENTIFIER()
+          .forEach((idNode) => {
+            const importName = idNode.getText();
+            this.environment.declare(importName, UnknownType, null, (str) =>
+              this.reportError(str, ctx)
+            );
+          });
+      }
+    }
+
     return UnitType;
+  }
+
+  visitExportStmt(ctx: parser.ExportStmtContext): ChicoryType {
+    // Assuming it's visited within visitProgram/visitStmt
+    ctx.IDENTIFIER().forEach((idNode) => {
+      const exportName = idNode.getText();
+      const exportType = this.environment.getType(exportName); // Look up in current env
+
+      if (exportType) {
+        // Apply substitution before storing? Usually yes, to capture inferred types.
+        const finalExportType = this.applySubstitution(
+          exportType,
+          this.currentSubstitution
+        );
+        this.exportedBindings.set(exportName, finalExportType);
+      } else {
+        this.reportError(
+          `Cannot export undefined identifier '${exportName}'.`,
+          ctx
+        );
+        // Optionally add to exports as UnknownType? Or omit? Omit is safer.
+      }
+    });
+    return UnitType; // Export statement itself has no type
   }
 
   visitExpr(ctx: parser.ExprContext): ChicoryType {

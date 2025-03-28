@@ -1,8 +1,4 @@
-import { ParserRuleContext } from 'antlr4ng';
-
-export interface ChicoryType {
-    toString(): string; // For easy debugging and hint display
-}
+import { ChicoryType } from './env';
 
 // Primitive Types
 export class StringTypeClass implements ChicoryType {
