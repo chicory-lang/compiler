@@ -115,8 +115,8 @@ primaryExpr
     | funcExpr          #FunctionExpression
     | jsxExpr           #JsxExpression
     | matchExpr         #MatchExpression
-    | blockExpr         #BlockExpression
     | recordExpr        #RecordExpression
+    | blockExpr         #BlockExpression
     | arrayLikeExpr     #ArrayLikeExpression
     | IDENTIFIER        #IdentifierExpression
     | literal           #LiteralExpression
