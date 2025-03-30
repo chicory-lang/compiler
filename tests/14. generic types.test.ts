@@ -32,7 +32,6 @@ type BoxesAllTheWayDown<T> = BoxOfBoxes<Box<T>>
 
 test('Generic types with complex structures', () => {
     const code = `
-type Result<T, E> = { resultType: string, value: T, error: E }
 type State<S, A> = { state: S, actions: A }
 type Reducer<S, A> = (S, A) => S
 `;
