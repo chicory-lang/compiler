@@ -93,7 +93,6 @@ export class ChicoryTypeChecker {
     // Add constructor definitions for the type checker's ADT logic
     this.constructors.push(someConstructorDef, noneConstructorDef);
 
-    // type Result<T,U> = Ok(T) | Err(U):const resultTypeName = "Result";
     // --- Result<T, E> = Ok(T) | Err(E) ---
     const resultTypeName = "Result";
     // Create distinct TypeVariable instances for T and E within Result's definition context
@@ -1107,7 +1106,7 @@ export class ChicoryTypeChecker {
             );
           });
       }
-      
+
       return UnitType;
     }
 
@@ -1920,8 +1919,8 @@ export class ChicoryTypeChecker {
       if (originalConstructorType instanceof FunctionType) {
         // Check if it's a nullary constructor (takes no parameters)
         if (originalConstructorType.paramTypes.length === 0) {
-          // For nullary constructors used as values (e.g., `Unset` in `{ operation: Unset }`,
-          // or `None` in `let x = None;`), return the ADT *instance type* directly.
+          // For nullary constructors used as values (e.g., `None` in `let x = None;`),
+          // return the ADT *instance type* directly.
           const returnType = originalConstructorType.returnType; // e.g., Operation, Option<T>, Result<T, E>
 
           // IMPORTANT: If the return type itself is generic (like Option<T>),
