@@ -10,7 +10,7 @@ const Some = (value) => ({ type: "Some", value });
 const None = () => ({ type: "None" });`,
     resultType: `
 const Ok = (value) => ({ type: "Ok", value });
-const Err = (value)} => ({ type: "Err", value });`,
+const Err = (value) => ({ type: "Err", value });`,
 }
 
 export class Prelude {
