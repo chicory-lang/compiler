@@ -815,21 +815,19 @@ export class ChicoryTypeChecker {
 
   private visitTypeExpr(
     ctx: parser.TypeExprContext,
-    typeName?: string
+    typeName?: string,
+    typeVarsInSig?: Map<string, TypeVariable> // Added optional map parameter
   ): ChicoryType {
-    // Visit the base type first
-    let baseType = this.visitPrimaryTypeExpr(ctx.primaryTypeExpr(), typeName);
+    // Pass map down to primary type visit
+    let baseType = this.visitPrimaryTypeExpr(
+      ctx.primaryTypeExpr(),
+      typeName,
+      typeVarsInSig
+    );
 
-    // Count the number of '[]' suffixes
-    // ANTLR generates methods based on the grammar structure.
-    // If '[]' is a single token or specific rule element, access it directly.
-    // Assuming '[]' might be parsed as separate '[' and ']' tokens:
+    // Array handling remains the same
     const arraySuffixCount =
       ctx.children?.filter((c) => c.getText() === "[]").length ?? 0;
-    // If parsed as '[' and ']', count '[' or ']' instead:
-    // const arraySuffixCount = ctx.getTokens(parser.ChicoryLexer.LBRACK)?.length ?? 0; // Adjust token name
-
-    // Wrap the base type in ArrayType for each suffix
     for (let i = 0; i < arraySuffixCount; i++) {
       baseType = new ArrayType(baseType);
     }
@@ -840,7 +838,8 @@ export class ChicoryTypeChecker {
   // Add the new visitPrimaryTypeExpr method
   private visitPrimaryTypeExpr(
     ctx: parser.PrimaryTypeExprContext,
-    typeName?: string
+    typeName?: string,
+    typeVarsInSig?: Map<string, TypeVariable>
   ): ChicoryType {
     if (ctx.adtType()) {
       //     // This context likely refers to an ADT *name*.
@@ -864,6 +863,9 @@ export class ChicoryTypeChecker {
         maybeAdtOption[0] instanceof parser.AdtOptionNoArgContext
       ) {
         const possibleGeneric = maybeAdtOption[0].IDENTIFIER().getText();
+        if (typeVarsInSig?.has(possibleGeneric)) {
+          return typeVarsInSig.get(possibleGeneric)!;
+        }
         const isInEnvironment = this.environment.getType(possibleGeneric);
         if (!isInEnvironment) {
           return new GenericType(possibleGeneric, []);
@@ -874,17 +876,55 @@ export class ChicoryTypeChecker {
     } else if (ctx.functionType()) {
       return this.visitFunctionType(ctx.functionType()!);
     } else if (ctx.genericTypeExpr()) {
-      return this.visitGenericTypeExpr(ctx.genericTypeExpr()!);
+      return this.visitGenericTypeExpr(ctx.genericTypeExpr()!, typeVarsInSig);
     } else if (ctx.recordType()) {
-      return this.visitRecordType(ctx.recordType()!);
+      return this.visitRecordType(ctx.recordType()!, typeVarsInSig);
     } else if (ctx.tupleType()) {
-      return this.visitTupleType(ctx.tupleType()!);
+      return this.visitTupleType(ctx.tupleType()!, typeVarsInSig);
     } else if (ctx.primitiveType()) {
       return this.getPrimitiveType(ctx.primitiveType()!);
     } else if (ctx.IDENTIFIER()) {
       const name = ctx.IDENTIFIER()!.getText();
+      // --- Add Logging ---
+      if (name === "T") {
+        // Or adjust if the type var name might differ
+        console.log(`[visitPrimaryTypeExpr] Encountered IDENTIFIER '${name}'.`);
+        if (typeVarsInSig) {
+          console.log(
+            `  - typeVarsInSig provided. Keys: [${Array.from(
+              typeVarsInSig.keys()
+            ).join(", ")}]`
+          );
+          console.log(
+            `  - typeVarsInSig.has('${name}'): ${typeVarsInSig.has(name)}`
+          );
+          if (typeVarsInSig.has(name)) {
+            console.log(
+              `  - Found in typeVarsInSig. Type: ${typeVarsInSig
+                .get(name)
+                ?.toString()} (Kind: ${typeVarsInSig.get(name)?.kind})`
+            );
+          }
+        } else {
+          console.log(`  - typeVarsInSig is null/undefined.`);
+        }
+      }
+      // --- End Logging ---
+
+      if (typeVarsInSig?.has(name)) {
+        return typeVarsInSig.get(name)!;
+      }
+
       const type = this.environment.getType(name);
+      if (name === "T")
+        console.log(
+          `[visitPrimaryTypeExpr] '${name}' not in typeVarsInSig. Checking environment. Found: ${type?.toString()}`
+        ); // Log env check specifically for T
       if (!type) {
+        if (name === "T")
+          console.log(
+            `[visitPrimaryTypeExpr] '${name}' not found anywhere. Reporting error and returning GenericType.`
+          );
         // Check if it's a known type variable in the current scope (e.g., from type definition params)
         if (this.environment.getType(name) instanceof TypeVariable) {
           return new TypeVariable(name);
@@ -898,7 +938,7 @@ export class ChicoryTypeChecker {
       return type;
     } else if (ctx.typeExpr()) {
       // For '(' typeExpr ')'
-      return this.visitTypeExpr(ctx.typeExpr()!); // Recursively call visitTypeExpr
+      return this.visitTypeExpr(ctx.typeExpr()!, typeName, typeVarsInSig); // Recursively call visitTypeExpr
     }
 
     this.reportError(
@@ -909,62 +949,128 @@ export class ChicoryTypeChecker {
   }
 
   private visitGenericTypeExpr(
-    ctx: parser.GenericTypeExprContext
+    ctx: parser.GenericTypeExprContext,
+    typeVarsInSig?: Map<string, TypeVariable> // Added map
   ): ChicoryType {
     const typeName = ctx.IDENTIFIER().getText();
-    const typeArguments = ctx.typeExpr().map((e) => this.visitTypeExpr(e));
-    return new GenericType(typeName, typeArguments); // Assuming GenericType is similar to AdtType for now
+    // Pass map when visiting arguments
+    const typeArguments = ctx
+      .typeExpr()
+      .map((e) => this.visitTypeExpr(e, undefined, typeVarsInSig));
+    // Check if the base typeName itself is a signature type variable
+    if (typeVarsInSig?.has(typeName)) {
+      // This case is complex: e.g. T<number> where T is a type var bound to a generic type constructor
+      // For now, let's assume the base name refers to a type in the environment or a defined generic.
+      // A more advanced system might handle higher-kinded types here.
+      console.warn(
+        `[visitGenericTypeExpr] Using type variable '${typeName}' as base of generic type application is not fully supported.`
+      );
+    }
+    return new GenericType(typeName, typeArguments);
   }
 
   private visitFunctionType(ctx: parser.FunctionTypeContext): ChicoryType {
+    // --- NEW: Scope and Map for Signature Vars ---
+    this.environment = this.environment.pushScope(); // Push scope for params FIRST
+    const typeVarsInSig = new Map<string, TypeVariable>(); // Track vars for this signature
+    // --- END NEW ---
+
     const paramTypes = ctx.typeParam()
-      ? ctx.typeParam().map((p) => this.visitParameterType(p))
+      ? ctx.typeParam().map((p) => this.visitParameterType(p, typeVarsInSig)) // Pass map
       : [];
-    const returnType = this.visitTypeExpr(ctx.typeExpr());
+    // Pass map to return type visit
+    const returnType = this.visitTypeExpr(
+      ctx.typeExpr(),
+      undefined,
+      typeVarsInSig
+    );
+
+    // --- NEW: Pop scope AFTER parsing everything ---
+    this.environment = this.environment.popScope();
+    // --- END NEW ---
 
     return new FunctionType(paramTypes, returnType);
   }
 
-  private visitParameterType(ctx: parser.TypeParamContext): ChicoryType {
-    if (ctx instanceof parser.NamedTypeParamContext) {
-      const existingType = this.environment.getType(ctx.IDENTIFIER().getText());
-      if (existingType) {
-        return existingType;
+  // 2. Modify visitParameterType signature and logic
+  private visitParameterType(
+    ctx: parser.TypeParamContext,
+    typeVarsInSig: Map<string, TypeVariable> // Added map parameter
+  ): ChicoryType {
+    if (ctx instanceof parser.UnnamedTypeParamContext) {
+      const primaryTypeExpr = ctx.typeExpr().primaryTypeExpr();
+      // Check if it's just a single Identifier, potentially a type variable
+      if (primaryTypeExpr && primaryTypeExpr.IDENTIFIER()) {
+        const name = primaryTypeExpr.IDENTIFIER()!.getText();
+        // Convention: Uppercase identifiers in type param position are type vars for this sig
+        // (Adjust this convention if needed for Chicory's style)
+        if (name[0].toUpperCase() === name[0]) {
+          if (typeVarsInSig.has(name)) {
+            return typeVarsInSig.get(name)!; // Reuse if already seen (e.g., (T, T) => T)
+          }
+          // Treat as a new Type Variable for this signature
+          const typeVar = new TypeVariable(name);
+          typeVarsInSig.set(name, typeVar);
+          // Declare in the temporary environment scope too, so it can be found
+          // when parsing the rest of the signature (e.g., return type).
+          this.environment.declare(name, typeVar, ctx, (str) =>
+            this.reportError(str, ctx)
+          );
+          return typeVar;
+        }
       }
-      const typeVar = this.newTypeVar();
-      this.environment.declare(typeVar.name, typeVar, ctx, (str) =>
-        this.reportError(str, ctx)
-      );
-      return typeVar;
-    } else if (ctx instanceof parser.UnnamedTypeParamContext) {
-      return this.visitTypeExpr(ctx.typeExpr());
+      // If not just an uppercase identifier, treat as a regular type expression
+      return this.visitTypeExpr(ctx.typeExpr(), undefined, typeVarsInSig); // Pass map down
+    } else if (ctx instanceof parser.NamedTypeParamContext) {
+      // For named params like 'x: T', parse the type 'T' using the context
+      const paramName = ctx.IDENTIFIER().getText();
+      const paramType = this.visitTypeExpr(
+        ctx.typeExpr(),
+        undefined,
+        typeVarsInSig
+      ); // Pass map
+      // Decide semantics: does 'x: T' declare 'x' with type 'T', or is 'T' itself the param type?
+      // Assuming 'x' is the runtime parameter and 'paramType' is its type.
+      // We declare 'x' later when visiting the function *body* or parameters list.
+      // Here, we are parsing the *type signature*, so we return the parsed type.
+      // If 'T' needed to be declared as a type var itself, it should follow the unnamed convention.
+      return paramType; // Return the parsed type T
     }
 
     throw new Error(`Unknown parameter type: ${ctx.getText()}`);
   }
 
-  private visitRecordType(ctx: parser.RecordTypeContext): ChicoryType {
+  private visitRecordType(
+    ctx: parser.RecordTypeContext,
+    typeVarsInSig?: Map<string, TypeVariable> // Added map
+  ): ChicoryType {
     const recordType = new RecordType(new Map());
     ctx.recordTypeAnontation().forEach((kv) => {
       const id = kv.IDENTIFIER()[0].getText();
-
       let val: ChicoryType;
+
+      // Pass map down when resolving field types
       if (kv.primitiveType()) {
         val = this.getPrimitiveType(kv.primitiveType()!);
       } else if (kv.recordType()) {
-        val = this.visitRecordType(kv.recordType()!);
+        val = this.visitRecordType(kv.recordType()!, typeVarsInSig); // Pass map
       } else if (kv.tupleType()) {
-        val = this.visitTupleType(kv.tupleType()!);
+        val = this.visitTupleType(kv.tupleType()!, typeVarsInSig); // Pass map
       } else if (kv.functionType()) {
+        // visitFunctionType creates its own scope/map, doesn't need the outer one passed
         val = this.visitFunctionType(kv.functionType()!);
-      } else if (kv.IDENTIFIER()) {
+      } else if (kv.IDENTIFIER()?.length > 1) {
+        // Ensure it's the type identifier case
         const rhs = kv.IDENTIFIER()[1].getText();
-
-        val = this.environment.getType(rhs) || new GenericType(rhs, []);
+        // Check signature vars first, then environment, then fallback
+        val =
+          typeVarsInSig?.get(rhs) ||
+          this.environment.getType(rhs) ||
+          new GenericType(rhs, []); // Fallback placeholder
       } else {
-        throw new Error(`Unknown record type annotation: ${kv.getText()}`);
+        this.reportError(`Unknown record type annotation: ${kv.getText()}`, kv);
+        val = UnknownType;
       }
-
       recordType.fields.set(id, val);
     });
     return recordType;
@@ -1060,8 +1166,14 @@ export class ChicoryTypeChecker {
     return adtType;
   }
 
-  private visitTupleType(ctx: parser.TupleTypeContext): ChicoryType {
-    return new TupleType(ctx.typeExpr().map((e) => this.visitTypeExpr(e)));
+  private visitTupleType(
+    ctx: parser.TupleTypeContext,
+    typeVarsInSig?: Map<string, TypeVariable> // Added map
+  ): ChicoryType {
+    // Pass map when visiting element types
+    return new TupleType(
+      ctx.typeExpr().map((e) => this.visitTypeExpr(e, undefined, typeVarsInSig))
+    );
   }
 
   private getPrimitiveType(ctx: parser.PrimitiveTypeContext): ChicoryType {
@@ -2637,14 +2749,32 @@ export class ChicoryTypeChecker {
     // Apply substitution to matchedType *before* checking its instance type
     matchedType = this.applySubstitution(matchedType, this.currentSubstitution); // Use main substitution
 
+    if (matchedType === UnknownType) {
+      console.warn(
+        `[visitPattern] Checking pattern '${ctx.getText()}' against 'unknown' type. Type checking may be incomplete.`
+      );
+      // Allow pattern matching to proceed, but don't perform type unification checks.
+      // Just declare variables (if any) as UnknownType.
+      if (ctx.ruleContext instanceof parser.AdtWithParamMatchPatternContext) {
+        const paramName = (ctx as parser.AdtWithParamMatchPatternContext)
+          .IDENTIFIER()[1]
+          .getText();
+        this.environment.declare(paramName, UnknownType, ctx, (str) =>
+          this.reportError(str, ctx)
+        );
+        this.hints.push({ context: ctx, type: UnknownType.toString() });
+      }
+      // Add similar handling for other patterns that bind variables.
+      addCase(ctx.getText()); // Add case for exhaustiveness logic if needed
+      return; // Skip further type checks for this pattern
+    }
+
     console.log(
       `[visitPattern] Checking pattern '${ctx.getText()}' against matched type '${matchedType}'`
     ); // Debug
 
     // --- AdtWithParamMatchPatternContext ---
-    if (
-      ctx.ruleContext instanceof parser.AdtWithParamMatchPatternContext
-    ) {
+    if (ctx.ruleContext instanceof parser.AdtWithParamMatchPatternContext) {
       const [adtName, paramName] = (
         ctx as parser.AdtWithParamMatchPatternContext
       )
@@ -2663,30 +2793,37 @@ export class ChicoryTypeChecker {
       ) {
         baseTypeName = matchedType.name;
       } else if (matchedType instanceof TypeVariable) {
-         // ... (handle TypeVariable case - declare param as Unknown or fresh var) ...
+        // ... (handle TypeVariable case - declare param as Unknown or fresh var) ...
         this.environment.declare(paramName, UnknownType, ctx, (str) =>
           this.reportError(str, ctx)
         );
         this.hints.push({ context: ctx, type: UnknownType.toString() });
-        console.warn(`[visitPattern] Cannot fully verify pattern ${adtName}(${paramName}) against unknown type ${matchedType}. Declaring ${paramName} as Unknown.`);
+        console.warn(
+          `[visitPattern] Cannot fully verify pattern ${adtName}(${paramName}) against unknown type ${matchedType}. Declaring ${paramName} as Unknown.`
+        );
         return;
       } else {
         this.reportError(
-            `Cannot match type '${matchedType}' against ADT pattern '${adtName}(${paramName})'`,
-            ctx
+          `Cannot match type '${matchedType}' against ADT pattern '${adtName}(${paramName})'`,
+          ctx
         );
         return;
       }
-
 
       // ... (find constructor) ...
       const constructor = this.constructors.find(
         (c) => c.name === adtName && c.adtName === baseTypeName
       );
-      if (!constructor) { /* ... report error ... */ return; }
+      if (!constructor) {
+        /* ... report error ... */ return;
+      }
       const constructorType = constructor.type;
-      if ( !(constructorType instanceof FunctionType) || constructorType.paramTypes.length !== 1) { /* ... report arity error ... */ return; }
-
+      if (
+        !(constructorType instanceof FunctionType) ||
+        constructorType.paramTypes.length !== 1
+      ) {
+        /* ... report arity error ... */ return;
+      }
 
       // --- Infer parameter type (using instantiation) ---
       let expectedParamType: ChicoryType = UnknownType;
@@ -2703,20 +2840,31 @@ export class ChicoryTypeChecker {
 
         if (
           adtDefinition instanceof GenericType &&
-          adtDefinition.typeArguments.length === matchedType.typeArguments.length
+          adtDefinition.typeArguments.length ===
+            matchedType.typeArguments.length
         ) {
           // Build map: T -> concrete type from matchedType (e.g., T -> string for Option<string>)
           adtDefinition.typeArguments.forEach((typeVar, index) => {
             if (typeVar instanceof TypeVariable) {
-              instantiationSubst.set(typeVar.name, matchedType.typeArguments[index]);
+              instantiationSubst.set(
+                typeVar.name,
+                matchedType.typeArguments[index]
+              );
             }
           });
           // Apply this map to the constructor's parameter type (e.g., apply T->string to T in Some(T))
-          expectedParamType = this.applySubstitution(originalParamType, instantiationSubst);
-          console.log(`[visitPattern] Instantiated expected param type for ${adtName}(${paramName}) to ${expectedParamType}`);
+          expectedParamType = this.applySubstitution(
+            originalParamType,
+            instantiationSubst
+          );
+          console.log(
+            `[visitPattern] Instantiated expected param type for ${adtName}(${paramName}) to ${expectedParamType}`
+          );
         } else {
-            console.warn(`[visitPattern] Mismatch between generic ADT definition and matched type instance for ${baseTypeName}. Falling back.`);
-            expectedParamType = originalParamType; // Fallback
+          console.warn(
+            `[visitPattern] Mismatch between generic ADT definition and matched type instance for ${baseTypeName}. Falling back.`
+          );
+          expectedParamType = originalParamType; // Fallback
         }
       } else {
         // Not a generic instance match, or constructor doesn't use type vars in param
@@ -2732,193 +2880,290 @@ export class ChicoryTypeChecker {
       // **** Alternative & Better: Directly use the expectedParamType, applying current subs ****
       // The type of the variable `paramName` IS the `expectedParamType` after applying substitutions
       // that might have occurred *before* this pattern was visited.
-      const finalParamType = this.applySubstitution(expectedParamType, this.currentSubstitution);
-
+      const finalParamType = this.applySubstitution(
+        expectedParamType,
+        this.currentSubstitution
+      );
 
       // **** This unification wasn't quite right. We don't unify expectedParamType with a new var.
       // **** We *declare* the pattern variable `paramName` with the calculated `finalParamType`.
       // **** Constraints happen when `paramName` is *used* in the arm's expression.
 
       // Declare the parameter variable in the arm's scope
-      this.environment.declare(paramName, finalParamType, ctx, (str) => // Use finalParamType
-        this.reportError(str, ctx)
+      this.environment.declare(
+        paramName,
+        finalParamType,
+        ctx,
+        (
+          str // Use finalParamType
+        ) => this.reportError(str, ctx)
       );
       this.hints.push({ context: ctx, type: finalParamType.toString() });
 
-    // --- AdtWithLiteralMatchPatternContext ---
+      // --- AdtWithLiteralMatchPatternContext ---
     } else if (
       ctx.ruleContext instanceof parser.AdtWithLiteralMatchPatternContext
     ) {
-        const adtName = (ctx as parser.AdtWithLiteralMatchPatternContext).IDENTIFIER().getText();
-        const literalCtx = (ctx as parser.AdtWithLiteralMatchPatternContext).literal();
-        const literalType = this.visitLiteral(literalCtx);
-        const literalValueStr = literalCtx.getText();
-        addCase(`${adtName}(*)`); // Use wildcard for exhaustiveness tracking
-        console.log(`[visitPattern] Adding case (ADT with literal): ${adtName}(${literalValueStr})`);
+      const adtName = (ctx as parser.AdtWithLiteralMatchPatternContext)
+        .IDENTIFIER()
+        .getText();
+      const literalCtx = (
+        ctx as parser.AdtWithLiteralMatchPatternContext
+      ).literal();
+      const literalType = this.visitLiteral(literalCtx);
+      const literalValueStr = literalCtx.getText();
+      addCase(`${adtName}(*)`); // Use wildcard for exhaustiveness tracking
+      console.log(
+        `[visitPattern] Adding case (ADT with literal): ${adtName}(${literalValueStr})`
+      );
 
-        let baseTypeName: string | null = null;
-        // ... (logic to determine baseTypeName from matchedType) ...
-         if (
-            matchedType instanceof AdtType ||
-            matchedType instanceof GenericType
-        ) {
-            baseTypeName = matchedType.name;
-        } else if (matchedType instanceof TypeVariable) {
-            console.warn(`[visitPattern] Cannot fully verify pattern ${adtName}(${literalValueStr}) against unknown type ${matchedType}.`);
-            return; // Allow pattern but cannot fully check
-        } else {
-            this.reportError(`Cannot match type '${matchedType}' against ADT pattern '${adtName}(${literalValueStr})'`, ctx);
-            return;
-        }
+      let baseTypeName: string | null = null;
+      // ... (logic to determine baseTypeName from matchedType) ...
+      if (
+        matchedType instanceof AdtType ||
+        matchedType instanceof GenericType
+      ) {
+        baseTypeName = matchedType.name;
+      } else if (matchedType instanceof TypeVariable) {
+        console.warn(
+          `[visitPattern] Cannot fully verify pattern ${adtName}(${literalValueStr}) against unknown type ${matchedType}.`
+        );
+        return; // Allow pattern but cannot fully check
+      } else {
+        this.reportError(
+          `Cannot match type '${matchedType}' against ADT pattern '${adtName}(${literalValueStr})'`,
+          ctx
+        );
+        return;
+      }
 
+      // ... (find constructor, check arity) ...
+      const constructor = this.constructors.find(
+        (c) => c.name === adtName && c.adtName === baseTypeName
+      );
+      if (!constructor) {
+        /* report error */ return;
+      }
+      const constructorType = constructor.type;
+      if (
+        !(constructorType instanceof FunctionType) ||
+        constructorType.paramTypes.length !== 1
+      ) {
+        /* report arity error */ return;
+      }
 
-        // ... (find constructor, check arity) ...
-        const constructor = this.constructors.find(c => c.name === adtName && c.adtName === baseTypeName);
-        if (!constructor) { /* report error */ return; }
-        const constructorType = constructor.type;
-        if (!(constructorType instanceof FunctionType) || constructorType.paramTypes.length !== 1) { /* report arity error */ return; }
+      // --- Check literal type against expected parameter type (with instantiation) ---
+      let expectedParamType: ChicoryType = UnknownType;
+      const originalParamType = constructorType.paramTypes[0];
 
-
-        // --- Check literal type against expected parameter type (with instantiation) ---
-        let expectedParamType: ChicoryType = UnknownType;
-        const originalParamType = constructorType.paramTypes[0];
-
+      if (
+        matchedType instanceof GenericType &&
+        matchedType.typeArguments.length > 0 &&
+        constructorType.returnType instanceof GenericType &&
+        constructorType.returnType.typeArguments.length > 0
+      ) {
+        const instantiationSubst = new Map<string, ChicoryType>();
+        const adtDefinition = this.environment.getType(baseTypeName);
         if (
-            matchedType instanceof GenericType &&
-            matchedType.typeArguments.length > 0 &&
-            constructorType.returnType instanceof GenericType &&
-            constructorType.returnType.typeArguments.length > 0
+          adtDefinition instanceof GenericType &&
+          adtDefinition.typeArguments.length ===
+            matchedType.typeArguments.length
         ) {
-            const instantiationSubst = new Map<string, ChicoryType>();
-            const adtDefinition = this.environment.getType(baseTypeName);
-             if (
-                adtDefinition instanceof GenericType &&
-                adtDefinition.typeArguments.length === matchedType.typeArguments.length
-            ) {
-                adtDefinition.typeArguments.forEach((typeVar, index) => {
-                    if (typeVar instanceof TypeVariable) {
-                        instantiationSubst.set(typeVar.name, matchedType.typeArguments[index]);
-                    }
-                });
-                expectedParamType = this.applySubstitution(originalParamType, instantiationSubst);
-                console.log(`[visitPattern] Instantiated expected param type for ${adtName}(${literalValueStr}) to ${expectedParamType}`);
-            } else {
-                 console.warn(`[visitPattern] Mismatch between generic ADT definition and matched type instance for ${baseTypeName}. Falling back.`);
-                 expectedParamType = originalParamType;
+          adtDefinition.typeArguments.forEach((typeVar, index) => {
+            if (typeVar instanceof TypeVariable) {
+              instantiationSubst.set(
+                typeVar.name,
+                matchedType.typeArguments[index]
+              );
             }
+          });
+          expectedParamType = this.applySubstitution(
+            originalParamType,
+            instantiationSubst
+          );
+          console.log(
+            `[visitPattern] Instantiated expected param type for ${adtName}(${literalValueStr}) to ${expectedParamType}`
+          );
         } else {
-            expectedParamType = originalParamType;
+          console.warn(
+            `[visitPattern] Mismatch between generic ADT definition and matched type instance for ${baseTypeName}. Falling back.`
+          );
+          expectedParamType = originalParamType;
         }
+      } else {
+        expectedParamType = originalParamType;
+      }
 
+      // **** Crucial Change: Unify expectedParamType with literalType USING this.currentSubstitution ****
+      const unificationResult = this.unify(
+        expectedParamType,
+        literalType,
+        this.currentSubstitution // <<< Use the main substitution map
+      );
 
-        // **** Crucial Change: Unify expectedParamType with literalType USING this.currentSubstitution ****
-        const unificationResult = this.unify(
+      if (unificationResult instanceof Error) {
+        // Apply substitution to expectedParamType *before* reporting error for clarity
+        const finalExpected = this.applySubstitution(
+          expectedParamType,
+          this.currentSubstitution
+        );
+        this.reportError(
+          `Literal ${literalValueStr} of type '${literalType}' is not compatible with expected parameter type '${finalExpected}' for constructor '${adtName}'. ${unificationResult.message}`,
+          literalCtx
+        );
+      } else {
+        // Unification succeeded, potentially refining types in this.currentSubstitution
+        console.log(
+          `[visitPattern] Literal ${literalValueStr} successfully unified with expected type ${this.applySubstitution(
             expectedParamType,
-            literalType,
-            this.currentSubstitution // <<< Use the main substitution map
+            this.currentSubstitution
+          )}`
         );
+      }
 
-        if (unificationResult instanceof Error) {
-            // Apply substitution to expectedParamType *before* reporting error for clarity
-            const finalExpected = this.applySubstitution(expectedParamType, this.currentSubstitution);
-            this.reportError(
-            `Literal ${literalValueStr} of type '${literalType}' is not compatible with expected parameter type '${finalExpected}' for constructor '${adtName}'. ${unificationResult.message}`,
-            literalCtx
-            );
-        } else {
-            // Unification succeeded, potentially refining types in this.currentSubstitution
-             console.log(`[visitPattern] Literal ${literalValueStr} successfully unified with expected type ${this.applySubstitution(expectedParamType, this.currentSubstitution)}`);
-        }
-
-    // --- LiteralMatchPatternContext ---
+      // --- LiteralMatchPatternContext ---
     } else if (ctx.ruleContext instanceof parser.LiteralMatchPatternContext) {
-        const literalCtx = (ctx as parser.LiteralMatchPatternContext).literal();
-        const literalType = this.visitLiteral(literalCtx);
-        const literalValueStr = literalCtx.getText();
-        addCase(literalValueStr);
-        console.log(`[visitPattern] Adding case (literal): ${literalValueStr}`);
+      const literalCtx = (ctx as parser.LiteralMatchPatternContext).literal();
+      const literalType = this.visitLiteral(literalCtx);
+      const literalValueStr = literalCtx.getText();
+      addCase(literalValueStr);
+      console.log(`[visitPattern] Adding case (literal): ${literalValueStr}`);
 
-        // **** Crucial Change: Unify matchedType with literalType USING this.currentSubstitution ****
-        const result = this.unify(
-            matchedType, // The type of the value being matched
-            literalType, // The type of the literal in the pattern
-            this.currentSubstitution // <<< Use the main substitution map
+      // **** Crucial Change: Unify matchedType with literalType USING this.currentSubstitution ****
+      const result = this.unify(
+        matchedType, // The type of the value being matched
+        literalType, // The type of the literal in the pattern
+        this.currentSubstitution // <<< Use the main substitution map
+      );
+      if (result instanceof Error) {
+        // Apply substitution before reporting error
+        const finalMatchedType = this.applySubstitution(
+          matchedType,
+          this.currentSubstitution
         );
-        if (result instanceof Error) {
-            // Apply substitution before reporting error
-            const finalMatchedType = this.applySubstitution(matchedType, this.currentSubstitution);
-            this.reportError(
-            `Cannot match literal ${literalValueStr} of type '${literalType}' against incompatible value of type '${finalMatchedType}'. ${result.message}`,
-            ctx
-            );
-        } else {
-             console.log(`[visitPattern] Literal pattern ${literalValueStr} successfully unified with matched type ${this.applySubstitution(matchedType, this.currentSubstitution)}`);
-        }
+        this.reportError(
+          `Cannot match literal ${literalValueStr} of type '${literalType}' against incompatible value of type '${finalMatchedType}'. ${result.message}`,
+          ctx
+        );
+      } else {
+        console.log(
+          `[visitPattern] Literal pattern ${literalValueStr} successfully unified with matched type ${this.applySubstitution(
+            matchedType,
+            this.currentSubstitution
+          )}`
+        );
+      }
 
-    // --- Other pattern types (BareAdt, Wildcard, etc.) ---
+      // --- Other pattern types (BareAdt, Wildcard, etc.) ---
     } else if (ctx.ruleContext instanceof parser.BareAdtMatchPatternContext) {
       // ... (existing logic is likely okay, ensure constructor checks use baseTypeName) ...
-       const adtName = (ctx as parser.BareAdtMatchPatternContext).IDENTIFIER().getText();
-       addCase(adtName);
-       console.log(`[visitPattern] Adding case (bare ADT): ${adtName}`);
+      const adtName = (ctx as parser.BareAdtMatchPatternContext)
+        .IDENTIFIER()
+        .getText();
+      addCase(adtName);
+      console.log(`[visitPattern] Adding case (bare ADT): ${adtName}`);
 
-       let baseTypeName: string | null = null;
-        if (matchedType instanceof AdtType || matchedType instanceof GenericType) {
-            baseTypeName = matchedType.name;
-        } else if (matchedType instanceof TypeVariable) {
-            console.warn(`[visitPattern] Cannot fully verify bare ADT pattern ${adtName} against unknown type ${matchedType}.`);
-            return;
-        } else {
-            this.reportError(`Cannot match type '${matchedType}' against ADT pattern '${adtName}'`, ctx);
-            return;
+      let baseTypeName: string | null = null;
+      if (
+        matchedType instanceof AdtType ||
+        matchedType instanceof GenericType
+      ) {
+        baseTypeName = matchedType.name;
+      } else if (matchedType instanceof TypeVariable) {
+        console.warn(
+          `[visitPattern] Cannot fully verify bare ADT pattern ${adtName} against unknown type ${matchedType}.`
+        );
+        return;
+      } else {
+        this.reportError(
+          `Cannot match type '${matchedType}' against ADT pattern '${adtName}'`,
+          ctx
+        );
+        return;
+      }
+
+      const constructor = this.constructors.find(
+        (c) => c.name === adtName && c.adtName === baseTypeName
+      );
+      if (!constructor) {
+        this.reportError(
+          `Constructor '${adtName}' does not exist on type '${baseTypeName}'`,
+          ctx
+        );
+      } else {
+        if (
+          constructor.type instanceof FunctionType &&
+          constructor.type.paramTypes.length > 0
+        ) {
+          this.reportError(
+            `Constructor '${adtName}' expects arguments, but none were provided.`,
+            ctx
+          );
         }
+        // **** Check type compatibility using unification ****
+        // We need the expected type (e.g., Result<T,E>) and the actual type (e.g., Result<string, number>)
+        // Unify the matchedType with the constructor's return type *instantiated* if generic
+        let constructorReturnType =
+          constructor.type instanceof FunctionType
+            ? constructor.type.returnType
+            : UnknownType; // Adjust if constructor type isn't always FunctionType
+        // Instantiate if needed (similar to param logic but for return type)
+        // ... (instantiation logic - potentially complex, maybe skip detailed check here if pattern shape is main goal)
+        // For now, mainly rely on name and arity check for bare ADT.
+        // A stricter check could unify matchedType with potentially instantiated constructorReturnType.
+      }
+    } else if (
+      ctx.ruleContext instanceof parser.AdtWithWildcardMatchPatternContext
+    ) {
+      // ... (existing logic is likely okay, ensure constructor checks use baseTypeName) ...
+      const adtName = (ctx as parser.AdtWithWildcardMatchPatternContext)
+        .IDENTIFIER()
+        .getText();
+      addCase(`${adtName}(*)`);
+      console.log(
+        `[visitPattern] Adding case (ADT with wildcard): ${adtName}(_)`
+      );
 
-       const constructor = this.constructors.find(c => c.name === adtName && c.adtName === baseTypeName);
-       if (!constructor) {
-           this.reportError(`Constructor '${adtName}' does not exist on type '${baseTypeName}'`, ctx);
-       } else {
-           if (constructor.type instanceof FunctionType && constructor.type.paramTypes.length > 0) {
-               this.reportError(`Constructor '${adtName}' expects arguments, but none were provided.`, ctx);
-           }
-           // **** Check type compatibility using unification ****
-           // We need the expected type (e.g., Result<T,E>) and the actual type (e.g., Result<string, number>)
-           // Unify the matchedType with the constructor's return type *instantiated* if generic
-           let constructorReturnType = constructor.type instanceof FunctionType ? constructor.type.returnType : UnknownType; // Adjust if constructor type isn't always FunctionType
-           // Instantiate if needed (similar to param logic but for return type)
-           // ... (instantiation logic - potentially complex, maybe skip detailed check here if pattern shape is main goal)
-           // For now, mainly rely on name and arity check for bare ADT.
-           // A stricter check could unify matchedType with potentially instantiated constructorReturnType.
-       }
+      let baseTypeName: string | null = null;
+      if (
+        matchedType instanceof AdtType ||
+        matchedType instanceof GenericType
+      ) {
+        baseTypeName = matchedType.name;
+      } else if (matchedType instanceof TypeVariable) {
+        console.warn(
+          `[visitPattern] Cannot fully verify ADT wildcard pattern ${adtName}(_) against unknown type ${matchedType}.`
+        );
+        return;
+      } else {
+        this.reportError(
+          `Cannot match type '${matchedType}' against ADT pattern '${adtName}(_)'`,
+          ctx
+        );
+        return;
+      }
 
-    } else if (ctx.ruleContext instanceof parser.AdtWithWildcardMatchPatternContext) {
-       // ... (existing logic is likely okay, ensure constructor checks use baseTypeName) ...
-       const adtName = (ctx as parser.AdtWithWildcardMatchPatternContext).IDENTIFIER().getText();
-       addCase(`${adtName}(*)`);
-       console.log(`[visitPattern] Adding case (ADT with wildcard): ${adtName}(_)`);
-
-       let baseTypeName: string | null = null;
-        if (matchedType instanceof AdtType || matchedType instanceof GenericType) {
-            baseTypeName = matchedType.name;
-        } else if (matchedType instanceof TypeVariable) {
-             console.warn(`[visitPattern] Cannot fully verify ADT wildcard pattern ${adtName}(_) against unknown type ${matchedType}.`);
-             return;
-        } else {
-             this.reportError(`Cannot match type '${matchedType}' against ADT pattern '${adtName}(_)'`, ctx);
-             return;
-        }
-
-       const constructor = this.constructors.find(c => c.name === adtName && c.adtName === baseTypeName);
-       if (!constructor) {
-           this.reportError(`Constructor '${adtName}' does not exist on type '${baseTypeName}'`, ctx);
-           return;
-       }
-       const constructorType = constructor.type;
-       if (!(constructorType instanceof FunctionType) || constructorType.paramTypes.length !== 1) {
-           this.reportError(`Constructor '${adtName}' does not take exactly one parameter as expected by wildcard pattern '${adtName}(_)'.`, ctx);
-           return;
-       }
-
-
+      const constructor = this.constructors.find(
+        (c) => c.name === adtName && c.adtName === baseTypeName
+      );
+      if (!constructor) {
+        this.reportError(
+          `Constructor '${adtName}' does not exist on type '${baseTypeName}'`,
+          ctx
+        );
+        return;
+      }
+      const constructorType = constructor.type;
+      if (
+        !(constructorType instanceof FunctionType) ||
+        constructorType.paramTypes.length !== 1
+      ) {
+        this.reportError(
+          `Constructor '${adtName}' does not take exactly one parameter as expected by wildcard pattern '${adtName}(_)'.`,
+          ctx
+        );
+        return;
+      }
     } else if (ctx.ruleContext instanceof parser.WildcardMatchPatternContext) {
       addCase("*");
       console.log(`[visitPattern] Adding case (wildcard): _`);

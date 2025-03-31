@@ -150,3 +150,19 @@ test('Cases in match expr against result that imply inconsistent U in Err(U)', (
   // We expect an error because Ok(number) and Ok(string) shouldn't be unifiable
   expect(result.errors).toHaveLength(1);
 });
+
+test('Should be able to do a `useState` with a Result ADT', () => {
+  const code = `bind {
+  useState as (T) => [T, (T) => void]
+} from "react"
+
+const [result, setResult] = useState(Ok(0))
+
+match (result) {
+  Err(_) => "Error can match"
+  _ => "Anything can match"
+}
+`;
+  const result = compile(code);
+  expect(result.errors).toHaveLength(0);
+})
