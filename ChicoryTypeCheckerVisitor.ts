@@ -148,38 +148,66 @@ export class ChicoryTypeChecker {
     type2: ChicoryType,
     substitution: SubstitutionMap
   ): ChicoryType | Error {
+    console.log(`[unify] ENTER`);
+    console.log(`  type1: ${type1.toString()} (${type1.constructor.name})`);
+    console.log(`  type2: ${type2.toString()} (${type2.constructor.name})`);
+    console.log(`  substitution (in):`, new Map(substitution)); // Log a copy
+
     type1 = this.applySubstitution(type1, substitution);
     type2 = this.applySubstitution(type2, substitution);
+    console.log(
+      `  type1 (subst): ${type1.toString()} (${type1.constructor.name})`
+    );
+    console.log(
+      `  type2 (subst): ${type2.toString()} (${type2.constructor.name})`
+    );
 
     if (typesAreEqual(type1, type2)) {
+      console.log(`[unify] SUCCESS: Types are equal.`);
+      console.log(`[unify] EXIT`);
+      return type1;
       return type1;
     }
 
     // Handle UnknownType: It can unify with any type, becoming that type.
     if (type1 === UnknownType) {
+      console.log(`[unify] BRANCH: type1 is UnknownType.`);
+      console.log(`[unify] SUCCESS: Unified with UnknownType.`);
+      console.log(`[unify] EXIT`);
       // If type2 is also Unknown, returning either is fine.
       // If type2 is known, the result of unification is the known type.
       return type2;
     }
     if (type2 === UnknownType) {
+      console.log(`[unify] BRANCH: type2 is UnknownType.`);
+      console.log(`[unify] SUCCESS: Unified with UnknownType.`);
+      console.log(`[unify] EXIT`);
       // type1 cannot be Unknown here due to the previous check.
       return type1; // Unification succeeds, result is the known type
     }
 
     if (type1 instanceof GenericType && type2 instanceof GenericType) {
+      console.log(`[unify] BRANCH: GenericType vs GenericType`);
       // 1. Check if the base names are the same
       if (type1.name !== type2.name) {
-        return new Error(
+        const error = new Error(
           `Cannot unify generic types with different names: ${type1.name} and ${type2.name}`
         );
+        console.error(`[unify] ERROR: ${error.message}`);
+        console.log(`[unify] EXIT (error)`);
+        return error;
       }
       // 2. Check if they have the same number of type arguments
       if (type1.typeArguments.length !== type2.typeArguments.length) {
-        return new Error(
+        const error = new Error(
           `Cannot unify generic type ${type1.name} with different number of arguments: ${type1.typeArguments.length} vs ${type2.typeArguments.length}`
         );
+        console.error(`[unify] ERROR: ${error.message}`);
+        console.log(`[unify] EXIT (error)`);
+        return error;
       }
       // 3. Recursively unify the type arguments
+      console.log(`  > Recursively unifying arguments for ${type1.name}`);
       for (let i = 0; i < type1.typeArguments.length; i++) {
         const result = this.unify(
           type1.typeArguments[i],
@@ -188,83 +216,161 @@ export class ChicoryTypeChecker {
         );
         if (result instanceof Error) {
           // Append context to the error message?
-          return new Error(
+          const error = new Error(
             `Cannot unify type arguments of ${type1.name}: ${result.message}`
           );
+          console.error(`[unify] ERROR: ${error.message}`);
+          console.log(`[unify] EXIT (error)`);
+          return error;
         }
       }
       // If all arguments unify, the unification succeeds.
       // Return one of them (after applying potential new substitutions from unifying args)
-      return this.applySubstitution(type1, substitution);
+      const unifiedType = this.applySubstitution(type1, substitution);
+      console.log(`[unify] SUCCESS: Unified GenericType ${unifiedType}`);
+      console.log(`[unify] EXIT`);
+      return unifiedType;
     }
 
     if (type1 instanceof GenericType && type1.typeArguments.length === 0) {
+      console.log(
+        `[unify] BRANCH: GenericType (no args) '${type1.name}' vs ${type2.constructor.name}`
+      );
       // A generic type with no arguments can be unified with any type
       // This is similar to a type variable
-      if (this.occursIn(new TypeVariable(type1.name), type2)) {
-        return new Error(
+      const occurs = this.occursIn(new TypeVariable(type1.name), type2);
+      console.log(
+        `  > Occurs check for '${
+          type1.name
+        }' in '${type2.toString()}': ${occurs}`
+      );
+      if (occurs) {
+        const error = new Error(
           `Cannot unify ${type1} with ${type2} (fails occurs check)`
         );
+        console.error(`[unify] ERROR: ${error.message}`);
+        console.log(`[unify] EXIT (error)`);
+        return error;
       }
+      console.log(
+        `  > Setting substitution: '${type1.name}' -> '${type2.toString()}'`
+      );
       substitution.set(type1.name, type2);
+      console.log(`  substitution (out):`, new Map(substitution));
+      console.log(`[unify] SUCCESS: Bound GenericType (no args).`);
+      console.log(`[unify] EXIT`);
       return type2;
     }
 
     // Also handle the reverse case
     if (type2 instanceof GenericType && type2.typeArguments.length === 0) {
+      console.log(
+        `[unify] BRANCH: Swapping GenericType (no args) '${type2.name}' and recursing.`
+      );
+      console.log(`[unify] EXIT (recursive swap)`);
       return this.unify(type2, type1, substitution);
     }
 
     if (type1 instanceof AdtType && type2 instanceof AdtType) {
+      console.log(`[unify] BRANCH: AdtType vs AdtType`);
       if (type1.name === type2.name) {
+        console.log(`[unify] SUCCESS: ADT names match.`);
+        console.log(`[unify] EXIT`);
         return type1;
       }
-      return new Error(
+      const error = new Error(
         `Cannot unify ADT types with different names: ${type1.name} and ${type2.name}`
       );
+      console.error(`[unify] ERROR: ${error.message}`);
+      console.log(`[unify] EXIT (error)`);
+      return error;
     }
 
     if (type1 instanceof TypeVariable) {
+      console.log(`[unify] BRANCH: type1 is TypeVariable ('${type1.name}')`);
       if (substitution.has(type1.name)) {
+        console.log(
+          `  > Recursing due to existing substitution for '${type1.name}'`
+        );
+        console.log(`[unify] EXIT (recursive)`);
         return this.unify(substitution.get(type1.name)!, type2, substitution);
       }
       if (type2 instanceof TypeVariable && type1.name === type2.name) {
-        return type1;
+        console.log(`[unify] SUCCESS: Same TypeVariable.`);
+        console.log(`[unify] EXIT`);
+        return type1; // Already equal
       }
-      if (this.occursIn(type1, type2)) {
-        return new Error(
+      const occurs = this.occursIn(type1, type2);
+      console.log(
+        `  > Occurs check for '${
+          type1.name
+        }' in '${type2.toString()}': ${occurs}`
+      );
+      if (occurs) {
+        const error = new Error(
           `Cannot unify ${type1} with ${type2} (fails occurs check)`
         );
+        console.error(`[unify] ERROR: ${error.message}`);
+        console.log(`[unify] EXIT (error)`);
+        return error;
       }
+      console.log(
+        `  > Setting substitution: '${type1.name}' -> '${type2.toString()}'`
+      );
       substitution.set(type1.name, type2);
-      return type2;
+      console.log(`  substitution (out):`, new Map(substitution)); // Log updated map
+      console.log(`[unify] SUCCESS: Bound TypeVariable.`);
+      console.log(`[unify] EXIT`);
+      return type2; // Return the unified type
     }
 
     if (type2 instanceof TypeVariable) {
+      console.log(
+        `[unify] BRANCH: type2 is TypeVariable ('${type2.name}'), swapping and recursing.`
+      );
+      console.log(`[unify] EXIT (recursive swap)`);
+      // Ensure the swap doesn't cause infinite recursion if occursIn fails later
       return this.unify(type2, type1, substitution);
     }
 
     if (type1 instanceof ArrayType && type2 instanceof ArrayType) {
+      console.log(`[unify] BRANCH: ArrayType vs ArrayType`);
       // Unify element types
+      console.log(`  > Recursively unifying element types`);
       const elementResult = this.unify(
         type1.elementType,
         type2.elementType,
         substitution
       );
       if (elementResult instanceof Error) {
-        return new Error(`Cannot unify array types: ${elementResult.message}`);
+        const error = new Error(
+          `Cannot unify array types: ${elementResult.message}`
+        );
+        console.error(`[unify] ERROR: ${error.message}`);
+        console.log(`[unify] EXIT (error)`);
+        return error;
       }
       // Return an array type with the potentially updated element type
       // applySubstitution is crucial here as elementResult might just be a TypeVar that got bound
-      return new ArrayType(this.applySubstitution(elementResult, substitution));
+      const unifiedType = new ArrayType(
+        this.applySubstitution(elementResult, substitution)
+      );
+      console.log(`[unify] SUCCESS: Unified ArrayType ${unifiedType}`);
+      console.log(`[unify] EXIT`);
+      return unifiedType;
     }
 
     if (type1 instanceof FunctionType && type2 instanceof FunctionType) {
+      console.log(`[unify] BRANCH: FunctionType vs FunctionType`);
       if (type1.paramTypes.length !== type2.paramTypes.length) {
-        return new Error(
+        const error = new Error(
           "Cannot unify function types with different number of parameters"
         );
+        console.error(`[unify] ERROR: ${error.message}`);
+        console.log(`[unify] EXIT (error)`);
+        return error;
       }
+      console.log(`  > Recursively unifying parameter types`);
       for (let i = 0; i < type1.paramTypes.length; i++) {
         const result = this.unify(
           type1.paramTypes[i],
@@ -272,17 +378,42 @@ export class ChicoryTypeChecker {
           substitution
         );
         if (result instanceof Error) {
+          console.error(
+            `[unify] ERROR: Failed unifying function param ${i}: ${result.message}`
+          );
+          console.log(`[unify] EXIT (error)`);
           return result;
         }
       }
-      return this.unify(type1.returnType, type2.returnType, substitution);
+      console.log(`  > Recursively unifying return types`);
+      const returnResult = this.unify(
+        type1.returnType,
+        type2.returnType,
+        substitution
+      );
+      if (returnResult instanceof Error) {
+        console.error(
+          `[unify] ERROR: Failed unifying function return type: ${returnResult.message}`
+        );
+        console.log(`[unify] EXIT (error)`);
+        return returnResult;
+      }
+      const unifiedType = this.applySubstitution(type1, substitution); // Re-apply subs to get final func type
+      console.log(`[unify] SUCCESS: Unified FunctionType ${unifiedType}`);
+      console.log(`[unify] EXIT`);
+      return unifiedType;
     }
 
     if (type1 instanceof TupleType && type2 instanceof TupleType) {
+      console.log(`[unify] BRANCH: TupleType vs TupleType`);
       if (type1.elementTypes.length !== type2.elementTypes.length) {
-        return new Error("Cannot unify tuples with different lengths");
+        const error = new Error("Cannot unify tuples with different lengths");
+        console.error(`[unify] ERROR: ${error.message}`);
+        console.log(`[unify] EXIT (error)`);
+        return error;
       }
 
+      console.log(`  > Recursively unifying element types`);
       for (let i = 0; i < type1.elementTypes.length; i++) {
         const result = this.unify(
           type1.elementTypes[i],
@@ -290,77 +421,145 @@ export class ChicoryTypeChecker {
           substitution
         );
         if (result instanceof Error) {
+          console.error(
+            `[unify] ERROR: Failed unifying tuple element ${i}: ${result.message}`
+          );
+          console.log(`[unify] EXIT (error)`);
           return result;
         }
       }
-
-      return type1;
+      const unifiedType = this.applySubstitution(type1, substitution); // Re-apply subs
+      console.log(`[unify] SUCCESS: Unified TupleType ${unifiedType}`);
+      console.log(`[unify] EXIT`);
+      return unifiedType;
     }
 
     // Add other type-specific unification rules (RecordType etc.) as needed
-    return new Error(`Cannot unify ${type1} with ${type2}`);
+    const finalError = new Error(`Cannot unify ${type1} with ${type2}`);
+    console.error(`[unify] ERROR: Fallthrough - ${finalError.message}`);
+    console.log(`[unify] EXIT (error)`);
+    return finalError;
   }
 
   applySubstitution(
     type: ChicoryType,
     substitution: SubstitutionMap
   ): ChicoryType {
+    // console.log(`[applySubstitution] ENTER`);
+    // console.log(`  type: ${type.toString()} (${type.constructor.name})`);
+    // console.log(`  substitution:`, new Map(substitution));
+
     if (type instanceof TypeVariable) {
+      // console.log(`  > Type is TypeVariable ('${type.name}')`);
       if (substitution.has(type.name)) {
-        return this.applySubstitution(
+        // console.log(`  > Found substitution for '${type.name}', recursing.`);
+        const substituted = this.applySubstitution(
           substitution.get(type.name)!,
           substitution
         );
+        // console.log(`[applySubstitution] EXIT (substituted TypeVariable '${type.name}' -> '${substituted.toString()}')`);
+        return substituted;
       }
+      // console.log(`  > No substitution found for '${type.name}'.`);
+      // console.log(`[applySubstitution] EXIT (no change)`);
       return type;
     }
 
     // Add ArrayType substitution
     if (type instanceof ArrayType) {
-      return new ArrayType(
-        this.applySubstitution(type.elementType, substitution)
+      // console.log(`  > Type is ArrayType`);
+      const substitutedElementType = this.applySubstitution(
+        type.elementType,
+        substitution
       );
+      if (substitutedElementType === type.elementType) {
+        // console.log(`[applySubstitution] EXIT (no change to element)`);
+        return type; // Optimization: return original if element didn't change
+      }
+      const result = new ArrayType(substitutedElementType);
+      // console.log(`[applySubstitution] EXIT (new ArrayType: ${result.toString()})`);
+      return result;
     }
 
     // Add case for GenericType
     if (type instanceof GenericType) {
+      // console.log(`  > Type is GenericType ('${type.name}')`);
       if (type.typeArguments.length === 0 && substitution.has(type.name)) {
-        return this.applySubstitution(
+        // console.log(`  > Found substitution for generic name '${type.name}', recursing.`);
+        const substituted = this.applySubstitution(
           substitution.get(type.name)!,
           substitution
         );
+        // console.log(`[applySubstitution] EXIT (substituted GenericType name '${type.name}' -> '${substituted.toString()}')`);
+        return substituted;
       }
-      return new GenericType(
-        type.name,
-        type.typeArguments.map((t) => this.applySubstitution(t, substitution))
-      );
+      // console.log(`  > Applying substitution to type arguments.`);
+      let changed = false;
+      const newArgs = type.typeArguments.map((t) => {
+        const newT = this.applySubstitution(t, substitution);
+        if (newT !== t) changed = true;
+        return newT;
+      });
+      if (!changed) {
+        // console.log(`[applySubstitution] EXIT (no change to arguments)`);
+        return type; // Optimization
+      }
+      const result = new GenericType(type.name, newArgs);
+      // console.log(`[applySubstitution] EXIT (new GenericType: ${result.toString()})`);
+      return result;
     }
 
     if (type instanceof FunctionType) {
-      const newParamTypes = type.paramTypes.map((p) =>
-        this.applySubstitution(p, substitution)
-      );
+      // console.log(`  > Type is FunctionType`);
+      let paramsChanged = false;
+      const newParamTypes = type.paramTypes.map((p) => {
+        const newP = this.applySubstitution(p, substitution);
+        if (newP !== p) paramsChanged = true;
+        return newP;
+      });
       const newReturnType = this.applySubstitution(
         type.returnType,
         substitution
       );
-      return new FunctionType(
+      const returnChanged = newReturnType !== type.returnType;
+
+      if (!paramsChanged && !returnChanged) {
+        // console.log(`[applySubstitution] EXIT (no change to params or return)`);
+        return type; // Optimization
+      }
+      const result = new FunctionType(
         newParamTypes,
         newReturnType,
         type.constructorName
       );
+      // console.log(`[applySubstitution] EXIT (new FunctionType: ${result.toString()})`);
+      return result;
     }
 
     if (type instanceof TupleType) {
-      return new TupleType(
-        type.elementTypes.map((e) => this.applySubstitution(e, substitution))
-      );
+      // console.log(`  > Type is TupleType`);
+      let changed = false;
+      const newElementTypes = type.elementTypes.map((e) => {
+        const newE = this.applySubstitution(e, substitution);
+        if (newE !== e) changed = true;
+        return newE;
+      });
+      if (!changed) {
+        // console.log(`[applySubstitution] EXIT (no change to elements)`);
+        return type; // Optimization
+      }
+      const result = new TupleType(newElementTypes);
+      // console.log(`[applySubstitution] EXIT (new TupleType: ${result.toString()})`);
+      return result;
     }
 
+    // console.log(`  > Type is primitive or other non-substitutable type.`);
+    // console.log(`[applySubstitution] EXIT (no change)`);
     return type;
   }
 
   occursIn(typeVar: TypeVariable, type: ChicoryType): boolean {
+    // Basic occurs check logging can be added here if needed
     if (type instanceof TypeVariable) {
       return typeVar.name === type.name;
     }
@@ -409,9 +608,13 @@ export class ChicoryTypeChecker {
 
   // Helper function to instantiate a function type with fresh type variables
   private instantiateFunctionType(funcType: FunctionType): FunctionType {
+    console.log(`[instantiateFunctionType] ENTER`);
+    console.log(`  funcType: ${funcType.toString()}`);
+
     // Find all unique type variables within the function type signature
     const typeVars = new Set<string>();
     const findVars = (type: ChicoryType) => {
+      // console.log(`  [findVars] Checking type: ${type.toString()}`);
       if (type instanceof TypeVariable) {
         // Only consider variables not bound in the immediate environment
         // For simplicity, we assume top-level constructor/function types need full instantiation.
@@ -437,17 +640,35 @@ export class ChicoryTypeChecker {
     // Create a substitution map from old var names to fresh vars
     const substitution: SubstitutionMap = new Map();
     typeVars.forEach((varName) => {
-      substitution.set(varName, this.newTypeVar());
+      const freshVar = this.newTypeVar();
+      console.log(
+        `  > Mapping type var '${varName}' to fresh var '${freshVar.name}'`
+      );
+      substitution.set(varName, freshVar);
     });
 
     // If no variables were found, return the original type
     if (substitution.size === 0) {
+      console.log(
+        `[instantiateFunctionType] No type variables found to instantiate.`
+      );
+      console.log(`[instantiateFunctionType] EXIT (original)`);
       return funcType;
     }
 
+    console.log(
+      `  > Applying substitution to instantiate:`,
+      new Map(substitution)
+    );
     // Apply the substitution to create the new, instantiated function type
     // We need to ensure applySubstitution correctly handles FunctionType (which it should)
-    return this.applySubstitution(funcType, substitution) as FunctionType;
+    const instantiatedType = this.applySubstitution(
+      funcType,
+      substitution
+    ) as FunctionType;
+    console.log(`  > Instantiated type: ${instantiatedType.toString()}`);
+    console.log(`[instantiateFunctionType] EXIT (instantiated)`);
+    return instantiatedType;
   }
 
   // Helper method to report errors
@@ -899,10 +1120,11 @@ export class ChicoryTypeChecker {
             `  - typeVarsInSig.has('${name}'): ${typeVarsInSig.has(name)}`
           );
           if (typeVarsInSig.has(name)) {
+            const tvis = typeVarsInSig.get(name)
             console.log(
               `  - Found in typeVarsInSig. Type: ${typeVarsInSig
                 .get(name)
-                ?.toString()} (Kind: ${typeVarsInSig.get(name)?.kind})`
+                ?.toString()} (Kind: ${tvis && "kind" in tvis ? tvis.kind : "no kind"})`
             );
           }
         } else {
@@ -920,22 +1142,36 @@ export class ChicoryTypeChecker {
         console.log(
           `[visitPrimaryTypeExpr] '${name}' not in typeVarsInSig. Checking environment. Found: ${type?.toString()}`
         ); // Log env check specifically for T
-      if (!type) {
-        if (name === "T")
-          console.log(
-            `[visitPrimaryTypeExpr] '${name}' not found anywhere. Reporting error and returning GenericType.`
-          );
-        // Check if it's a known type variable in the current scope (e.g., from type definition params)
-        if (this.environment.getType(name) instanceof TypeVariable) {
-          return new TypeVariable(name);
-        }
-        // Otherwise, it's likely an undefined type name.
-        this.reportError(`Type identifier '${name}' not found.`, ctx);
-        // Return Unknown or a placeholder Generic type? Placeholder is often better for inference.
-        return new GenericType(name, []);
-        // return UnknownType;
+
+      // Check environment SECOND
+      if (type) {
+        console.log(`[visitPrimaryTypeExpr] Found '${name}' in environment.`);
+        // If found in env, it's a concrete type (or already declared generic/ADT)
+        return type;
       }
-      return type;
+
+      // THIRD: If we are likely parsing a type signature (typeVarsInSig exists)
+      // AND the identifier is uppercase, assume it's an intended type variable
+      // that might be defined later in the signature (e.g., return type uses a param var).
+      // This helps catch cases missed by visitParameterType.
+      if (typeVarsInSig && name[0].toUpperCase() === name[0]) {
+        console.log(
+          `[visitPrimaryTypeExpr] Assuming '${name}' is a signature TypeVariable (not found yet).`
+        );
+        const typeVar = new TypeVariable(name);
+        // Add it to the map now so it's found if referenced again in the same signature
+        typeVarsInSig.set(name, typeVar);
+        // Optionally declare in temp env too? Might be redundant if visitParameterType handles it.
+        // this.environment.declare(name, typeVar, ctx, ...);
+        return typeVar;
+      }
+
+      // LAST RESORT: Undefined type. Report error and return Unknown.
+      this.reportError(`Type identifier '${name}' not found.`, ctx);
+      console.log(
+        `[visitPrimaryTypeExpr] Identifier '${name}' not found in typeVarsInSig or environment. Reporting error.`
+      );
+      return UnknownType; // Changed from GenericType fallback
     } else if (ctx.typeExpr()) {
       // For '(' typeExpr ')'
       return this.visitTypeExpr(ctx.typeExpr()!, typeName, typeVarsInSig); // Recursively call visitTypeExpr
@@ -997,33 +1233,46 @@ export class ChicoryTypeChecker {
     ctx: parser.TypeParamContext,
     typeVarsInSig: Map<string, TypeVariable> // Added map parameter
   ): ChicoryType {
+    // Replace the content of this block:
     if (ctx instanceof parser.UnnamedTypeParamContext) {
-      const primaryTypeExpr = ctx.typeExpr().primaryTypeExpr();
-      // Check if it's just a single Identifier, potentially a type variable
-      if (primaryTypeExpr && primaryTypeExpr.IDENTIFIER()) {
-        const name = primaryTypeExpr.IDENTIFIER()!.getText();
-        // Convention: Uppercase identifiers in type param position are type vars for this sig
-        // (Adjust this convention if needed for Chicory's style)
-        if (name[0].toUpperCase() === name[0]) {
+      const typeExprCtx = ctx.typeExpr();
+      const primaryTypeExprCtx = typeExprCtx.primaryTypeExpr();
+      const primaryText = primaryTypeExprCtx?.getText(); // Get the text content
+
+      // --- REVISED CONDITION ---
+      // Check if the text is a single uppercase identifier and there's no array suffix
+      // Check child count: > 1 implies the '[]' suffix is present.
+      if (primaryText && /^[A-Z][a-zA-Z0-9_]*$/.test(primaryText) && typeExprCtx.getChildCount() <= 1) { // <<< MODIFIED CHECK
+          const name = primaryText;
+          // Convention: Uppercase identifiers in type param position are type vars for this sig
+          // (The regex already checked the uppercase start)
+
           if (typeVarsInSig.has(name)) {
-            return typeVarsInSig.get(name)!; // Reuse if already seen (e.g., (T, T) => T)
+              console.log(`[visitParameterType] Reusing existing TypeVariable '${name}' for signature.`);
+              return typeVarsInSig.get(name)!; // Reuse if already seen
           }
           // Treat as a new Type Variable for this signature
           const typeVar = new TypeVariable(name);
           typeVarsInSig.set(name, typeVar);
-          // Declare in the temporary environment scope too, so it can be found
-          // when parsing the rest of the signature (e.g., return type).
+          // Declare in the temporary environment scope too
           this.environment.declare(name, typeVar, ctx, (str) =>
-            this.reportError(str, ctx)
+              this.reportError(str, ctx)
           );
-          return typeVar;
-        }
+          console.log(
+              `[visitParameterType] Parsed '${name}' as NEW TypeVariable for signature (using getText).` // Updated log
+          );
+          return typeVar; // <<< Ensure this return happens
       }
-      // If not just an uppercase identifier, treat as a regular type expression
-      return this.visitTypeExpr(ctx.typeExpr(), undefined, typeVarsInSig); // Pass map down
+      // --- END REVISED CONDITION ---
+
+      // If not a simple uppercase identifier based on text, or if it has '[]', treat as regular type expression
+      console.log(
+          `[visitParameterType] '${ctx.getText()}' is not a simple uppercase identifier or has array suffix. Parsing as regular type expression.` // Updated log
+      );
+      return this.visitTypeExpr(typeExprCtx, undefined, typeVarsInSig); // Pass map down
     } else if (ctx instanceof parser.NamedTypeParamContext) {
       // For named params like 'x: T', parse the type 'T' using the context
-      const paramName = ctx.IDENTIFIER().getText();
+      const paramName = ctx.IDENTIFIER().getText(); // TODO: Use paramName? Currently unused.
       const paramType = this.visitTypeExpr(
         ctx.typeExpr(),
         undefined,
@@ -1974,19 +2223,31 @@ export class ChicoryTypeChecker {
 
   visitIdentifier(ctx: parser.IdentifierExpressionContext): ChicoryType {
     const identifierName = ctx.IDENTIFIER().getText();
+    console.log(`[visitIdentifier] ENTER: '${identifierName}'`);
 
     // 1. Check environment (variables, functions declared with let/const, etc.)
     const envType = this.environment.getType(identifierName);
+    console.log(
+      `  > Found in environment: ${envType ? envType.toString() : "null"}`
+    );
     if (envType) {
       // Apply substitutions to the type found in the environment
+      console.log(
+        `  > Applying current substitution to env type:`,
+        new Map(this.currentSubstitution)
+      );
       let substitutedType = this.applySubstitution(
         envType,
         this.currentSubstitution
       );
+      console.log(`  > Substituted env type: ${substitutedType.toString()}`);
 
       // If it's a function type from the env that might be generic, instantiate it.
       // (Keep existing logic for this part, ensure it handles generic functions correctly)
       if (substitutedType instanceof FunctionType) {
+        console.log(
+          `  > Substituted type is FunctionType. Checking if instantiation needed.`
+        );
         // Check if it contains type variables that might need instantiation
         let containsTypeVars = false;
         const checkVars = (t: ChicoryType) => {
@@ -2001,13 +2262,17 @@ export class ChicoryTypeChecker {
           else if (t instanceof GenericType) t.typeArguments.forEach(checkVars);
         };
         checkVars(substitutedType);
+        console.log(`  > Contains type vars? ${containsTypeVars}`);
 
         if (containsTypeVars) {
           // Potentially generic function found in env, instantiate it
+          console.log(`  > Instantiating function type from environment.`);
           substitutedType = this.instantiateFunctionType(substitutedType);
           console.log(
-            `[visitIdentifier] Instantiated function from env ${identifierName}: ${substitutedType}`
+            `  > Instantiated function from env ${identifierName}: ${substitutedType}`
           );
+        } else {
+          console.log(`  > No instantiation needed for function type.`);
         }
       }
       // Note: We are NOT instantiating GenericType references found directly in the environment here.
@@ -2016,24 +2281,41 @@ export class ChicoryTypeChecker {
       // The current logic applies substitution, which might be sufficient if `T` gets bound.
 
       this.hints.push({ context: ctx, type: substitutedType.toString() });
+      console.log(
+        `[visitIdentifier] EXIT: Returning from environment: ${substitutedType.toString()}`
+      );
       return substitutedType; // Return type from env (potentially substituted and/or instantiated)
     }
 
     // 2. Check if it's an ADT constructor
+    console.log(`  > Not found in env. Checking ADT constructors.`);
     const constructor = this.getConstructors().find(
       (c) => c.name === identifierName
+    );
+    console.log(
+      `  > Found constructor definition: ${
+        constructor ? constructor.name : "null"
+      }`
     );
 
     if (constructor) {
       const originalConstructorType = constructor.type; // This is always a FunctionType
+      console.log(
+        `  > Original constructor type: ${originalConstructorType.toString()}`
+      );
 
       // --- NEW LOGIC ---
       if (originalConstructorType instanceof FunctionType) {
+        console.log(`  > Constructor type is FunctionType.`);
         // Check if it's a nullary constructor (takes no parameters)
         if (originalConstructorType.paramTypes.length === 0) {
+          console.log(`  > Constructor is nullary (no params).`);
           // For nullary constructors used as values (e.g., `None` in `let x = None;`),
           // return the ADT *instance type* directly.
           const returnType = originalConstructorType.returnType; // e.g., Operation, Option<T>, Result<T, E>
+          console.log(
+            `  > Nullary constructor return type (pre-instantiation): ${returnType.toString()}`
+          );
 
           // IMPORTANT: If the return type itself is generic (like Option<T>),
           // we need to instantiate it with fresh variables here, because
@@ -2048,22 +2330,30 @@ export class ChicoryTypeChecker {
                 (arg instanceof GenericType && arg.typeArguments.length === 0)
             )
           ) {
+            console.log(`  > Return type is generic and needs instantiation.`);
             // This is a nullary constructor for a GENERIC type (like None for Option<T>)
             // Instantiate the return type with fresh variables.
             finalReturnType = this.instantiateGenericType(returnType); // Use the helper
             console.log(
-              `[visitIdentifier] Instantiated nullary generic constructor return type ${identifierName}: ${returnType} -> ${finalReturnType}`
+              `  > Instantiated nullary generic constructor return type ${identifierName}: ${returnType} -> ${finalReturnType}`
             );
           } else {
+            console.log(
+              `  > Return type is not generic or doesn't need instantiation.`
+            );
             // Nullary constructor for a non-generic type (like Add for Operation)
             console.log(
-              `[visitIdentifier] Resolved nullary constructor ${identifierName} to its return type: ${finalReturnType}`
+              `  > Resolved nullary constructor ${identifierName} to its return type: ${finalReturnType}`
             );
           }
 
           this.hints.push({ context: ctx, type: finalReturnType.toString() });
+          console.log(
+            `[visitIdentifier] EXIT: Returning nullary constructor instance type: ${finalReturnType.toString()}`
+          );
           return finalReturnType; // Return Operation, Option<T'>, Result<T', E'> etc.
         } else {
+          console.log(`  > Constructor is non-nullary (has params).`);
           // For non-nullary constructors (like Some, Ok), return the *function* type.
           // This function type might need instantiation if the ADT is generic.
           // Example: `Some` should yield `(T) => Option<T>`. Using `Some` directly
@@ -2071,6 +2361,11 @@ export class ChicoryTypeChecker {
           //          assign the function type `(T') => Option<T'>` to `makeSome`.
 
           const adtDefinition = this.environment.getType(constructor.adtName);
+          console.log(
+            `  > ADT definition for '${constructor.adtName}': ${
+              adtDefinition ? adtDefinition.toString() : "null"
+            }`
+          );
           let typeToReturn: ChicoryType = originalConstructorType; // Start with the original function type
 
           // Check if the ADT itself is generic. If so, instantiate the constructor's FUNCTION type.
@@ -2078,55 +2373,84 @@ export class ChicoryTypeChecker {
             adtDefinition instanceof GenericType &&
             adtDefinition.typeArguments.length > 0
           ) {
+            console.log(
+              `  > ADT '${constructor.adtName}' is generic. Checking if constructor function needs instantiation.`
+            );
             // Ensure the constructor function type itself involves those generic params.
             // This check might be redundant if instantiation handles non-generic cases gracefully.
             let needsInstantiation = false;
             const checkVars = (t: ChicoryType) => {
-              /* ... same checkVars as above ... */
+              if (t instanceof TypeVariable) needsInstantiation = true;
+              else if (t instanceof FunctionType) {
+                t.paramTypes.forEach(checkVars);
+                checkVars(t.returnType);
+              } else if (t instanceof ArrayType) checkVars(t.elementType);
+              else if (t instanceof TupleType)
+                t.elementTypes.forEach(checkVars);
+              else if (t instanceof RecordType)
+                Array.from(t.fields.values()).forEach(checkVars);
+              else if (t instanceof GenericType)
+                t.typeArguments.forEach(checkVars);
             };
             checkVars(typeToReturn);
+            console.log(
+              `  > Constructor function contains type vars? ${needsInstantiation}`
+            );
 
             if (needsInstantiation) {
+              console.log(
+                `  > Instantiating non-nullary constructor function type.`
+              );
               typeToReturn = this.instantiateFunctionType(
                 originalConstructorType
               );
               console.log(
-                `[visitIdentifier] Instantiated non-nullary generic constructor FUNCTION ${identifierName}: ${originalConstructorType} -> ${typeToReturn}`
+                `  > Instantiated non-nullary generic constructor FUNCTION ${identifierName}: ${originalConstructorType} -> ${typeToReturn}`
               );
             } else {
               console.log(
-                `[visitIdentifier] Using non-nullary constructor function type (ADT generic, but func not?) ${identifierName}: ${typeToReturn}`
+                `  > Using non-nullary constructor function type (ADT generic, but func not?) ${identifierName}: ${typeToReturn}`
               );
             }
           } else {
+            console.log(
+              `  > ADT '${constructor.adtName}' is not generic, or constructor function doesn't need instantiation.`
+            );
             // Non-nullary constructor for a non-generic ADT.
             console.log(
-              `[visitIdentifier] Resolved non-nullary constructor function type ${identifierName}: ${typeToReturn}`
+              `  > Resolved non-nullary constructor function type ${identifierName}: ${typeToReturn}`
             );
           }
 
           this.hints.push({ context: ctx, type: typeToReturn.toString() });
+          console.log(
+            `[visitIdentifier] EXIT: Returning non-nullary constructor function type: ${typeToReturn.toString()}`
+          );
           return typeToReturn; // Return FunctionType like (T) => Option<T>, potentially instantiated
         }
       } else {
         // Should not happen based on how constructors are defined (they should always have FunctionType)
-        this.reportError(
-          `Internal Error: Constructor ${identifierName} has unexpected type structure: ${originalConstructorType}`,
-          ctx
-        );
+        const errorMsg = `Internal Error: Constructor ${identifierName} has unexpected type structure: ${originalConstructorType}`;
+        console.error(`[visitIdentifier] ERROR: ${errorMsg}`);
+        this.reportError(errorMsg, ctx);
         this.hints.push({ context: ctx, type: UnknownType.toString() });
+        console.log(`[visitIdentifier] EXIT (error)`);
         return UnknownType;
       }
       // --- END NEW LOGIC ---
     }
 
     // 3. Not found in environment or as a constructor
-    this.reportError(`Identifier '${identifierName}' is not defined.`, ctx);
+    const errorMsg = `Identifier '${identifierName}' is not defined.`;
+    console.error(`[visitIdentifier] ERROR: ${errorMsg}`);
+    this.reportError(errorMsg, ctx);
     this.hints.push({ context: ctx, type: UnknownType.toString() });
+    console.log(`[visitIdentifier] EXIT (error)`);
     return UnknownType;
   }
 
   visitLiteral(ctx: parser.LiteralContext): ChicoryType {
+    // Basic logging can be added here if needed
     const content = ctx.getText();
     if (content === "true" || content === "false") {
       return BooleanType;
@@ -2376,126 +2700,235 @@ export class ChicoryTypeChecker {
     ctx: parser.CallExprContext,
     functionType: ChicoryType // This is the type of the expression being called
   ): ChicoryType {
+    const callSiteText = ctx.parent?.getText() ?? ctx.getText(); // Try to get more context
+    const callContext = callSiteText.substring(0, 40); // Limit context length
+    console.log(`[visitCallExpr] ENTER: Context ~ "${callContext}..."`);
+    console.log(
+      `  functionType (raw): ${functionType.toString()} (${
+        functionType.constructor.name
+      })`
+    );
+    console.log(
+      `  currentSubstitution (before call):`,
+      new Map(this.currentSubstitution)
+    );
+
     // Apply *outer* substitutions to the function type *before* doing anything else.
     // This resolves any type variables bound *outside* the function call itself.
     const substitutedFunctionType = this.applySubstitution(
       functionType,
       this.currentSubstitution // Use the substitution context from *before* this call
     );
+    console.log(
+      `  functionType (substituted): ${substitutedFunctionType.toString()} (${
+        substitutedFunctionType.constructor.name
+      })`
+    );
 
     // Check if it's actually a function type after substitution
     if (!(substitutedFunctionType instanceof FunctionType)) {
-      this.reportError(
-        `Cannot call a non-function type: '${substitutedFunctionType}'`,
-        ctx
-      );
+      const errorMsg = `Cannot call a non-function type: '${substitutedFunctionType}'`;
+      console.error(`[visitCallExpr] ERROR: ${errorMsg}`);
+      this.reportError(errorMsg, ctx);
       // Store UnknownType for this expression node before returning
       this.expressionTypes.set(ctx, UnknownType);
       this.hints.push({ context: ctx, type: UnknownType.toString() });
+      console.log(`[visitCallExpr] EXIT (error)`);
       return UnknownType;
     }
 
     // It IS a FunctionType, proceed.
     const funcType = substitutedFunctionType as FunctionType;
+    console.log(`  Function signature: ${funcType.toString()}`);
 
     // Type check arguments in the current context.
     // visitExpr uses/updates this.currentSubstitution internally for argument inference.
+    console.log(`  > Visiting arguments...`);
     const argumentTypes = ctx.expr()
-      ? ctx.expr().map((expr) => this.visitExpr(expr))
+      ? ctx.expr().map((expr, i) => {
+          console.log(`    > Visiting arg ${i + 1}: ${expr.getText()}`);
+          const argType = this.visitExpr(expr);
+          console.log(`    > Arg ${i + 1} type (raw): ${argType.toString()}`);
+          return argType;
+        })
       : [];
+    console.log(`  > Finished visiting arguments.`);
+    console.log(
+      `  currentSubstitution (after visiting args):`,
+      new Map(this.currentSubstitution)
+    );
 
     // Apply current substitutions to argument types as well, as visitExpr might have updated them.
-    const substitutedArgumentTypes = argumentTypes.map((argType) =>
-      this.applySubstitution(argType, this.currentSubstitution)
-    );
+    const substitutedArgumentTypes = argumentTypes.map((argType, i) => {
+      const substArgType = this.applySubstitution(
+        argType,
+        this.currentSubstitution
+      );
+      console.log(
+        `  > Arg ${i + 1} type (substituted): ${substArgType.toString()}`
+      );
+      return substArgType;
+    });
 
     // Create a FRESH substitution map specific to *this function call*.
     // This map will capture how type variables *within* the function signature
     // are unified with the provided arguments.
     const callSubstitution: SubstitutionMap = new Map();
+    console.log(
+      `  > Initializing callSubstitution (empty):`,
+      new Map(callSubstitution)
+    );
 
     // Check arity (number of arguments)
     if (substitutedArgumentTypes.length !== funcType.paramTypes.length) {
-      this.reportError(
-        `Expected ${funcType.paramTypes.length} arguments, but got ${substitutedArgumentTypes.length}`,
-        ctx
-      );
+      const errorMsg = `Expected ${funcType.paramTypes.length} arguments, but got ${substitutedArgumentTypes.length}`;
+      console.error(`[visitCallExpr] ERROR: ${errorMsg}`);
+      this.reportError(errorMsg, ctx);
       // Store UnknownType and return early on arity mismatch
       this.expressionTypes.set(ctx, UnknownType);
       this.hints.push({ context: ctx, type: UnknownType.toString() });
+      console.log(`[visitCallExpr] EXIT (error)`);
       return UnknownType;
     }
 
     // Unify arguments with parameters using the call-specific substitution map (`callSubstitution`).
+    console.log(`  > Unifying arguments with parameters...`);
     let unificationOk = true;
     for (let i = 0; i < substitutedArgumentTypes.length; i++) {
+      const paramType = funcType.paramTypes[i];
+      const argType = substitutedArgumentTypes[i];
+      console.log(
+        `    > Unifying param ${i + 1} ('${paramType}') with arg ${
+          i + 1
+        } ('${argType}')`
+      );
       // Unify the function's parameter type with the (substituted) argument type.
       // The substitution map `callSubstitution` is updated by `unify`.
       const result = this.unify(
-        funcType.paramTypes[i], // Parameter type from the (potentially substituted) function signature
-        substitutedArgumentTypes[i], // Argument type resolved in the current context
+        paramType, // Parameter type from the (potentially substituted) function signature
+        argType, // Argument type resolved in the current context
         callSubstitution // Update this map with bindings for type vars in funcType.paramTypes
       );
       if (result instanceof Error) {
         unificationOk = false;
+        const errorMsg = `Argument ${
+          i + 1
+        } type mismatch: Cannot unify parameter type '${paramType}' with argument type '${argType}'. ${
+          result.message
+        }`;
+        console.error(`[visitCallExpr] ERROR: ${errorMsg}`);
         this.reportError(
-          `Argument ${i + 1} type mismatch: Cannot unify parameter type '${
-            funcType.paramTypes[i]
-          }' with argument type '${substitutedArgumentTypes[i]}'. ${
-            result.message
-          }`,
+          errorMsg,
           ctx.expr(i)! // Report error on the specific argument
         );
         // Continue checking other args even if one fails, to report all mismatches
+      } else {
+        console.log(
+          `    > Unification ${
+            i + 1
+          } successful. Resulting type: ${result.toString()}`
+        );
+        console.log(
+          `    > callSubstitution (after arg ${i + 1}):`,
+          new Map(callSubstitution)
+        );
       }
     }
 
     // If any argument unification failed, the result type is Unknown
     if (!unificationOk) {
+      console.error(`[visitCallExpr] ERROR: Argument unification failed.`);
       this.expressionTypes.set(ctx, UnknownType);
       this.hints.push({ context: ctx, type: UnknownType.toString() });
+      console.log(`[visitCallExpr] EXIT (error)`);
       return UnknownType;
     }
 
+    console.log(`  > Argument unification successful.`);
+    console.log(`  > Final callSubstitution:`, new Map(callSubstitution));
+
     // Calculate the final return type by applying the call-specific substitution (`callSubstitution`)
     // to the function's declared return type.
+    console.log(
+      `  > Calculating final return type from '${funcType.returnType.toString()}' using callSubstitution.`
+    );
     let finalReturnType = this.applySubstitution(
       funcType.returnType,
       callSubstitution
+    );
+    console.log(
+      `  > Final return type (before constructor check): ${finalReturnType.toString()}`
     );
 
     // --- Special Handling for Generic Constructors ---
     // If this was a call to a generic ADT constructor (like Some<T>),
     // ensure the resulting type is correctly represented as GenericType<ConcreteArg(s)>.
     if (funcType.constructorName && finalReturnType instanceof AdtType) {
+      console.log(
+        `  > Handling potential generic constructor call: ${funcType.constructorName}`
+      );
       const constructorDef = this.constructors.find(
         (c) => c.name === funcType.constructorName
       );
       const adtDef = constructorDef
         ? this.environment.getType(constructorDef.adtName)
         : null;
+      console.log(`    > Constructor Def: ${constructorDef?.name}`);
+      console.log(`    > ADT Def: ${adtDef ? adtDef.toString() : "null"}`);
 
       // Check if the ADT definition is indeed generic
       if (adtDef instanceof GenericType && adtDef.typeArguments.length > 0) {
+        console.log(`    > ADT definition is generic: ${adtDef.toString()}`);
         // Resolve the ADT's type parameters (e.g., 'T' in Option<T>)
         // using the `callSubstitution` derived from the arguments.
-        const concreteArgs = adtDef.typeArguments.map((typeVar) => {
+        console.log(
+          `    > Resolving concrete type arguments using callSubstitution:`,
+          new Map(callSubstitution)
+        );
+        const concreteArgs = adtDef.typeArguments.map((typeVar, i) => {
+          console.log(
+            `      > Resolving ADT param ${i}: ${typeVar.toString()}`
+          );
           if (typeVar instanceof TypeVariable) {
             // Apply substitution recursively in case a type var maps to another type var etc.
-            return this.applySubstitution(typeVar, callSubstitution);
+            const resolvedArg = this.applySubstitution(
+              typeVar,
+              callSubstitution
+            );
+            console.log(
+              `      > Resolved ADT param ${i} ('${
+                typeVar.name
+              }') to: ${resolvedArg.toString()}`
+            );
+            return resolvedArg;
           }
           // Should not happen for ADT def params, but return as is if not a TypeVariable
+          console.log(
+            `      > ADT param ${i} is not a TypeVariable, using as is: ${typeVar.toString()}`
+          );
           return typeVar;
         });
+        console.log(
+          `    > Concrete arguments resolved: [${concreteArgs
+            .map((a) => a.toString())
+            .join(", ")}]`
+        );
 
         // Check if all type variables were successfully resolved to concrete types
         if (concreteArgs.some((arg) => arg instanceof TypeVariable)) {
           // This indicates incomplete inference or an error.
           console.warn(
-            `[visitCallExpr] Could not fully resolve type arguments for generic constructor ${funcType.constructorName}. Result: ${finalReturnType}, Inferred Args: ${concreteArgs}`
+            `[visitCallExpr] Could not fully resolve type arguments for generic constructor ${
+              funcType.constructorName
+            }. Result: ${finalReturnType}, Inferred Args: [${concreteArgs
+              .map((a) => a.toString())
+              .join(", ")}]`
           );
           // Report an error? Or return partially resolved type? Let's return the GenericType with unresolved vars for now.
           finalReturnType = new GenericType(adtDef.name, concreteArgs);
+          console.log(
+            `    > Final return type (partially resolved): ${finalReturnType.toString()}`
+          );
           // Optionally report an error:
           // this.reportError(`Could not infer all type arguments for generic constructor ${funcType.constructorName}`, ctx);
           // finalReturnType = UnknownType;
@@ -2503,22 +2936,37 @@ export class ChicoryTypeChecker {
           // Successfully resolved all type arguments. Create the concrete GenericType instance.
           finalReturnType = new GenericType(adtDef.name, concreteArgs);
           console.log(
-            `[visitCallExpr] Resolved generic constructor call ${funcType.constructorName} to ${finalReturnType}`
+            `    > Resolved generic constructor call ${funcType.constructorName} to concrete type: ${finalReturnType}`
           );
         }
+      } else {
+        console.log(
+          `    > ADT definition is not generic or has no type arguments. No special handling needed.`
+        );
       }
       // If adtDef wasn't GenericType or had no type arguments, finalReturnType remains as calculated before (likely AdtType).
+    } else {
+      console.log(
+        `  > Not a constructor call or return type is not AdtType. No special handling needed.`
+      );
     }
     // --- End Special Handling ---
 
     // Store and add hint for the final, calculated return type
+    console.log(
+      `  > Storing final return type for expression: ${finalReturnType.toString()}`
+    );
     this.expressionTypes.set(ctx, finalReturnType);
     this.hints.push({ context: ctx, type: finalReturnType.toString() });
 
+    console.log(
+      `[visitCallExpr] EXIT: Returning final type: ${finalReturnType.toString()}`
+    );
     return finalReturnType;
   }
 
   visitMatchExpr(ctx: parser.MatchExprContext): ChicoryType {
+    // Basic logging can be added here if needed
     // Type check the expression being matched
     const matchedType = this.visitExpr(ctx.expr());
     const appliedMatchedType = this.applySubstitution(
@@ -3185,40 +3633,62 @@ export class ChicoryTypeChecker {
     genericType: GenericType,
     providedArgs: ChicoryType[] = [] // Renamed from typeArgs to avoid confusion
   ): ChicoryType {
+    console.log(`[instantiateGenericType] ENTER`);
+    console.log(`  genericType: ${genericType.toString()}`);
     console.log(
-      `[instantiateGenericType] Instantiating generic type: ${
-        genericType.name
-      }, providedArgs: ${providedArgs.map((t) => t.toString())}`
+      `  providedArgs: [${providedArgs.map((t) => t.toString()).join(", ")}]`
     );
 
     // If specific type arguments are provided, use them directly.
     if (providedArgs.length > 0) {
+      console.log(`  > Provided arguments detected.`);
       if (providedArgs.length !== genericType.typeArguments.length) {
         console.warn(
           `[instantiateGenericType] Warning: Mismatched number of type arguments provided for ${genericType.name}. Expected ${genericType.typeArguments.length}, got ${providedArgs.length}. Using provided arguments anyway.`
         );
         // Potentially report an error here instead of just warning, depending on desired strictness.
-        return new GenericType(genericType.name, providedArgs);
       }
-      return new GenericType(genericType.name, providedArgs);
+      const result = new GenericType(genericType.name, providedArgs);
+      console.log(
+        `[instantiateGenericType] EXIT (using provided args): ${result.toString()}`
+      );
+      return result;
     }
 
+    console.log(`  > No provided arguments. Creating fresh type variables.`);
     // If no specific arguments provided, create fresh type variables.
     const substitution = new Map<string, ChicoryType>();
-    const freshTypeArgs = genericType.typeArguments.map((param) => {
+    const freshTypeArgs = genericType.typeArguments.map((param, i) => {
+      console.log(`    > Instantiating param ${i}: ${param.toString()}`);
       if (param instanceof TypeVariable) {
         const freshVar = this.newTypeVar();
+        console.log(
+          `      > Param is TypeVariable ('${param.name}'). Creating fresh var: '${freshVar.name}'`
+        );
         substitution.set(param.name, freshVar);
         return freshVar;
       }
-
+      // If the parameter isn't a variable itself, apply any substitutions created *so far*
+      // (e.g., for nested generics like Foo<A, B<A>> - unlikely but possible)
+      console.log(
+        `      > Param is not TypeVariable. Applying current instantiation substitution.`
+      );
       return this.applySubstitution(param, substitution);
     });
 
+    console.log(
+      `  > Fresh type arguments created: [${freshTypeArgs
+        .map((t) => t.toString())
+        .join(", ")}]`
+    );
     // Return the generic type with fresh variables.
     // We don't need to manipulate constructors here; that should happen
     // when the constructor *itself* is referenced or called.
-    return new GenericType(genericType.name, freshTypeArgs);
+    const result = new GenericType(genericType.name, freshTypeArgs);
+    console.log(
+      `[instantiateGenericType] EXIT (with fresh vars): ${result.toString()}`
+    );
+    return result;
   }
 
   // Helper method to check if a variable appears in a type
