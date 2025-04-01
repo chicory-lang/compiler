@@ -3048,16 +3048,30 @@ export class ChicoryTypeChecker {
       // --- Analyze Pattern for Exhaustiveness ---
       const armPatternCtx = arm.matchPattern();
 
+      // --- Check for wildcard or variable pattern FIRST ---
+      // These patterns make the match exhaustive for non-ADT types like string/number,
+      // and also stop the variant tracking for ADTs.
+      if (armPatternCtx instanceof parser.WildcardMatchPatternContext) {
+          hasWildcard = true;
+          console.log("[visitMatchExpr] Wildcard pattern found.");
+      }
+      // TODO: Add VariableMatchPatternContext check here if it acts as a wildcard
+      // else if (armPatternCtx instanceof parser.VariableMatchPatternContext) {
+      //    hasWildcard = true;
+      //    console.log("[visitMatchExpr] Variable pattern found.");
+      // }
+
+
+      // --- Track ADT Variant Coverage ---
+      // Only track specific ADT variants if it's an ADT match AND we haven't found a wildcard yet.
       if (isAdtMatch && !hasWildcard) {
-        // Only track full coverage if relevant and no wildcard seen
-        if (armPatternCtx instanceof parser.WildcardMatchPatternContext) {
-          hasWildcard = true; // Wildcard covers everything
-        }
+        // The checks for specific ADT patterns (AdtWithParam, BareAdt, etc.) go here.
+        // Note: The Wildcard check is removed from *inside* this block as it's handled above.
         // Add VariableMatchPatternContext check if you implement it
         // else if (armPatternCtx instanceof parser.VariableMatchPatternContext) {
         //    hasWildcard = true;
         // }
-        else if (
+        if (
           armPatternCtx instanceof parser.AdtWithParamMatchPatternContext
         ) {
           // Pattern like Some(val) - FULLY covers the 'Some' variant
@@ -3145,11 +3159,24 @@ export class ChicoryTypeChecker {
         // If non-exhaustiveness is a type error, return Unknown
         // return UnknownType;
       }
+    } else if (appliedMatchedType === StringType && !hasWildcard) {
+      // String matching requires a wildcard for exhaustiveness
+      this.reportError(
+        `Match expression on type 'string' must be exhaustive. Add a wildcard pattern '_' or a variable pattern to handle all possible strings.`,
+        ctx
+      );
+      // Potentially set finalArmType to UnknownType here if non-exhaustive string match is an error
+      // finalArmType = UnknownType;
     }
+    // TODO: Add similar check for NumberType?
     // Add similar checks here for boolean, etc., if required
     // else if (appliedMatchedType === BooleanType && !hasWildcard) {
-    //     const needsTrue = !coveredCases.has('true');
-    //     const needsFalse = !coveredCases.has('false');
+    //     // Check if both 'true' and 'false' literals were covered
+    //     // This requires tracking literal cases specifically, not just fullyCoveredVariants
+    //     // const coveredLiterals = ... collect literal strings from LiteralMatchPatternContext ...
+    //     // if (!coveredLiterals.has('true') || !coveredLiterals.has('false')) {
+    //     //    this.reportError(`Match on boolean is not exhaustive. Missing 'true' or 'false'.`, ctx);
+    //     // }
     //     if (needsTrue || needsFalse) { ... report error ... }
     // }
     // --- End Final Check ---

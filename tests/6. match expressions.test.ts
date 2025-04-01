@@ -112,3 +112,12 @@ test("Ensure return types are consistent when return is an ADT (non matching err
   // This is not allowed because Err() does not have a consistent type
   expect(result.errors).toHaveLength(1);
 });
+
+test("Inexhaustive matches should not type check", () => {
+    const code = `match ("str") {
+        "str" => "there are 'infinitely' many strings..."
+        "str2" => "so there has to be a wildcard/param here..."
+      }`;
+    const result = compile(code);
+    expect(result.errors).toHaveLength(1);
+})
