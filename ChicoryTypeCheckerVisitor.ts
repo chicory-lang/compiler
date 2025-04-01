@@ -52,6 +52,15 @@ export class ChicoryTypeChecker {
     this.initializePrelude();
   }
 
+  private setExpressionType(ctx: ParserRuleContext, type: ChicoryType): void {
+    this.expressionTypes.set(ctx, type);
+    if (type instanceof GenericType && type.name === "Option") {
+      this.prelude.requireOptionType();
+    } else if (type instanceof GenericType && type.name === "Result") {
+      this.prelude.requireResultType();
+    }
+  }
+
   private initializePrelude(): void {
     // TODO: Consider clearing any existing prelude stuff if check is re-run
     const optionTypeName = "Option";
@@ -1120,11 +1129,13 @@ export class ChicoryTypeChecker {
             `  - typeVarsInSig.has('${name}'): ${typeVarsInSig.has(name)}`
           );
           if (typeVarsInSig.has(name)) {
-            const tvis = typeVarsInSig.get(name)
+            const tvis = typeVarsInSig.get(name);
             console.log(
               `  - Found in typeVarsInSig. Type: ${typeVarsInSig
                 .get(name)
-                ?.toString()} (Kind: ${tvis && "kind" in tvis ? tvis.kind : "no kind"})`
+                ?.toString()} (Kind: ${
+                tvis && "kind" in tvis ? tvis.kind : "no kind"
+              })`
             );
           }
         } else {
@@ -1242,32 +1253,39 @@ export class ChicoryTypeChecker {
       // --- REVISED CONDITION ---
       // Check if the text is a single uppercase identifier and there's no array suffix
       // Check child count: > 1 implies the '[]' suffix is present.
-      if (primaryText && /^[A-Z][a-zA-Z0-9_]*$/.test(primaryText) && typeExprCtx.getChildCount() <= 1) { // <<< MODIFIED CHECK
-          const name = primaryText;
-          // Convention: Uppercase identifiers in type param position are type vars for this sig
-          // (The regex already checked the uppercase start)
+      if (
+        primaryText &&
+        /^[A-Z][a-zA-Z0-9_]*$/.test(primaryText) &&
+        typeExprCtx.getChildCount() <= 1
+      ) {
+        // <<< MODIFIED CHECK
+        const name = primaryText;
+        // Convention: Uppercase identifiers in type param position are type vars for this sig
+        // (The regex already checked the uppercase start)
 
-          if (typeVarsInSig.has(name)) {
-              console.log(`[visitParameterType] Reusing existing TypeVariable '${name}' for signature.`);
-              return typeVarsInSig.get(name)!; // Reuse if already seen
-          }
-          // Treat as a new Type Variable for this signature
-          const typeVar = new TypeVariable(name);
-          typeVarsInSig.set(name, typeVar);
-          // Declare in the temporary environment scope too
-          this.environment.declare(name, typeVar, ctx, (str) =>
-              this.reportError(str, ctx)
-          );
+        if (typeVarsInSig.has(name)) {
           console.log(
-              `[visitParameterType] Parsed '${name}' as NEW TypeVariable for signature (using getText).` // Updated log
+            `[visitParameterType] Reusing existing TypeVariable '${name}' for signature.`
           );
-          return typeVar; // <<< Ensure this return happens
+          return typeVarsInSig.get(name)!; // Reuse if already seen
+        }
+        // Treat as a new Type Variable for this signature
+        const typeVar = new TypeVariable(name);
+        typeVarsInSig.set(name, typeVar);
+        // Declare in the temporary environment scope too
+        this.environment.declare(name, typeVar, ctx, (str) =>
+          this.reportError(str, ctx)
+        );
+        console.log(
+          `[visitParameterType] Parsed '${name}' as NEW TypeVariable for signature (using getText).` // Updated log
+        );
+        return typeVar; // <<< Ensure this return happens
       }
       // --- END REVISED CONDITION ---
 
       // If not a simple uppercase identifier based on text, or if it has '[]', treat as regular type expression
       console.log(
-          `[visitParameterType] '${ctx.getText()}' is not a simple uppercase identifier or has array suffix. Parsing as regular type expression.` // Updated log
+        `[visitParameterType] '${ctx.getText()}' is not a simple uppercase identifier or has array suffix. Parsing as regular type expression.` // Updated log
       );
       return this.visitTypeExpr(typeExprCtx, undefined, typeVarsInSig); // Pass map down
     } else if (ctx instanceof parser.NamedTypeParamContext) {
@@ -1948,7 +1966,7 @@ export class ChicoryTypeChecker {
 
     // Store the result type for this tail expression context
     // This helps the compiler later potentially
-    this.expressionTypes.set(ctx, resultType); // Assuming expressionTypes map exists
+    this.setExpressionType(ctx, resultType); // Assuming expressionTypes map exists
 
     return resultType; // Return the computed type for this tail expression
   }
@@ -2731,7 +2749,7 @@ export class ChicoryTypeChecker {
       console.error(`[visitCallExpr] ERROR: ${errorMsg}`);
       this.reportError(errorMsg, ctx);
       // Store UnknownType for this expression node before returning
-      this.expressionTypes.set(ctx, UnknownType);
+      this.setExpressionType(ctx, UnknownType);
       this.hints.push({ context: ctx, type: UnknownType.toString() });
       console.log(`[visitCallExpr] EXIT (error)`);
       return UnknownType;
@@ -2785,7 +2803,7 @@ export class ChicoryTypeChecker {
       console.error(`[visitCallExpr] ERROR: ${errorMsg}`);
       this.reportError(errorMsg, ctx);
       // Store UnknownType and return early on arity mismatch
-      this.expressionTypes.set(ctx, UnknownType);
+      this.setExpressionType(ctx, UnknownType);
       this.hints.push({ context: ctx, type: UnknownType.toString() });
       console.log(`[visitCallExpr] EXIT (error)`);
       return UnknownType;
@@ -2838,7 +2856,7 @@ export class ChicoryTypeChecker {
     // If any argument unification failed, the result type is Unknown
     if (!unificationOk) {
       console.error(`[visitCallExpr] ERROR: Argument unification failed.`);
-      this.expressionTypes.set(ctx, UnknownType);
+      this.setExpressionType(ctx, UnknownType);
       this.hints.push({ context: ctx, type: UnknownType.toString() });
       console.log(`[visitCallExpr] EXIT (error)`);
       return UnknownType;
@@ -2956,7 +2974,7 @@ export class ChicoryTypeChecker {
     console.log(
       `  > Storing final return type for expression: ${finalReturnType.toString()}`
     );
-    this.expressionTypes.set(ctx, finalReturnType);
+    this.setExpressionType(ctx, finalReturnType);
     this.hints.push({ context: ctx, type: finalReturnType.toString() });
 
     console.log(
@@ -2990,7 +3008,7 @@ export class ChicoryTypeChecker {
       if (adtTypeNameForCheck === "Option") {
         adtVariants = ["Some", "None"];
         isAdtMatch = true;
-        this.prelude.requireOptionType();
+        // this.prelude.requireOptionType();
       } else if (adtTypeNameForCheck === "Result") {
         // Assuming Result variants are 'Ok', 'Err'
         adtVariants = ["Ok", "Err"];
