@@ -476,8 +476,8 @@ export class ChicoryParserVisitor {
     ctx: parser.MatchPatternContext,
     varName: string
   ): { pattern: string; inject?: string } {
-    if (ctx.ruleContext instanceof parser.BareAdtMatchPatternContext) {
-      const adtName = (ctx as parser.BareAdtMatchPatternContext)
+    if (ctx.ruleContext instanceof parser.BareAdtOrVariableMatchPatternContext) {
+      const adtName = (ctx as parser.BareAdtOrVariableMatchPatternContext)
         .IDENTIFIER()
         .getText();
       return { pattern: `${varName}.type === "${adtName}"` };

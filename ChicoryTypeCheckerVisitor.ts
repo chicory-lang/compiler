@@ -31,6 +31,38 @@ import {
 } from "./env";
 import { Prelude } from "./Prelude";
 
+// Represents the state of coverage for the match expression
+interface MatchCoverage {
+  type: "adt" | "string" | "number" | "boolean" | "other";
+  // For ADT
+  adtName?: string;
+  remainingVariants?: Set<string>; // Variants not yet fully covered by param/wildcard
+  partiallyCoveredVariants?: Set<string>; // Variants hit by literal matches
+  // For string/number/boolean/other
+  wildcardOrParamSeen?: boolean;
+  // For boolean specifically
+  trueCovered?: boolean;
+  falseCovered?: boolean;
+  // For tracking simple duplicates/unreachability
+  processedPatterns?: Set<string>; // Stores string representations of patterns already seen
+}
+
+// Information extracted from a pattern context
+interface PatternInfo {
+  type:
+    | "adt_param"
+    | "adt_wildcard"
+    | "adt_literal"
+    | "adt_bare"
+    | "literal"
+    | "wildcard"
+    | "variable" // Added for patterns like 'x => ...'
+    | "unknown";
+  variantName?: string; // For ADT patterns (e.g., "Some", "None")
+  literalValue?: string | number | boolean; // For literal patterns
+  patternString: string; // Unique string representation for reachability checks
+}
+
 export class ChicoryTypeChecker {
   private environment: TypeEnvironment;
   private errors: CompilationError[] = [];
@@ -2231,8 +2263,8 @@ export class ChicoryTypeChecker {
       return this.visitFuncExpr(ctx.funcExpr());
     } else if (ctx instanceof parser.MatchExpressionContext) {
       return this.visitMatchExpr(ctx.matchExpr());
-    } else if (ctx instanceof parser.JsxExpressionContext) {
-      return this.visitJsxExpr(ctx.jsxExpr());
+      // } else if (ctx instanceof parser.JsxExpressionContext) {
+      //   return this.visitJsxExpr(ctx.jsxExpr());
     }
 
     this.reportError(`Unknown primary expression type: ${ctx.getText()}`, ctx);
@@ -2980,246 +3012,504 @@ export class ChicoryTypeChecker {
     console.log(
       `[visitCallExpr] EXIT: Returning final type: ${finalReturnType.toString()}`
     );
-    return finalReturnType;
+    return finalReturnType; // Keep existing return
   }
 
+  // --- BEGIN REFACTORED visitMatchExpr ---
   visitMatchExpr(ctx: parser.MatchExprContext): ChicoryType {
-    // Basic logging can be added here if needed
-    // Type check the expression being matched
-    const matchedType = this.visitExpr(ctx.expr());
+    const matchedExprCtx = ctx.expr();
+    const matchedType = this.visitExpr(matchedExprCtx);
     const appliedMatchedType = this.applySubstitution(
       matchedType,
       this.currentSubstitution
-    ); // Apply substitutions early
+    );
 
-    // --- Setup for Exhaustiveness Check ---
-    let adtVariants: readonly string[] | null = null;
-    let isAdtMatch = false; // Flag to know if we need the check
-    let adtTypeNameForCheck: string | null = null; // Store the base name (e.g., "Option")
+    console.log(
+      `[visitMatchExpr] Start. Matched type: ${appliedMatchedType.toString()}`
+    );
 
-    // Check for built-in generic ADTs (Option, Result) or user-defined ADTs
-    if (
-      appliedMatchedType instanceof GenericType ||
-      appliedMatchedType instanceof AdtType
-    ) {
-      adtTypeNameForCheck = appliedMatchedType.name;
-
-      // Handle known built-ins specifically
-      if (adtTypeNameForCheck === "Option") {
-        adtVariants = ["Some", "None"];
-        isAdtMatch = true;
-        // this.prelude.requireOptionType();
-      } else if (adtTypeNameForCheck === "Result") {
-        // Assuming Result variants are 'Ok', 'Err'
-        adtVariants = ["Ok", "Err"];
-        isAdtMatch = true;
-        // this.prelude.requireResultType(); // Assuming this exists
-      } else {
-        // Check if it's a user-defined ADT by looking up its constructors
-        const constructorsForType = this.constructors.filter(
-          (c) => c.adtName === adtTypeNameForCheck
-        );
-        if (constructorsForType.length > 0) {
-          adtVariants = constructorsForType.map((c) => c.name);
-          isAdtMatch = true;
-        } else {
-          // It has a name like an ADT, but no constructors found. Might be an error elsewhere,
-          // or just not an ADT we can check exhaustiveness for.
-          console.warn(
-            `[visitMatchExpr] Type '${adtTypeNameForCheck}' looks like an ADT but no constructors were found.`
-          );
-        }
-      }
-    }
-    // Add checks here if you want to enforce exhaustiveness for other types like booleans
-    // else if (appliedMatchedType === BooleanType) { ... }
-
-    const fullyCoveredVariants = new Set<string>(); // Stores constructor names that are fully covered
-    let hasWildcard = false;
-    // --- End of Setup ---
-
+    // --- Coverage Tracking Setup ---
+    const coverage = this.initializeCoverage(appliedMatchedType, ctx);
     let returnTypes: ChicoryType[] = [];
+    let firstArmType: ChicoryType | null = null;
 
-    // Process each match arm
-    ctx.matchArm().forEach((arm) => {
-      // Create a new scope for variables declared in the pattern
-      this.environment = this.environment.pushScope();
-
-      // --- Analyze Pattern for Exhaustiveness ---
+    // --- Process Arms ---
+    for (let i = 0; i < ctx.matchArm().length; i++) {
+      const arm = ctx.matchArm(i)!;
       const armPatternCtx = arm.matchPattern();
 
-      // --- Check for wildcard or variable pattern FIRST ---
-      // These patterns make the match exhaustive for non-ADT types like string/number,
-      // and also stop the variant tracking for ADTs.
-      if (armPatternCtx instanceof parser.WildcardMatchPatternContext) {
-          hasWildcard = true;
-          console.log("[visitMatchExpr] Wildcard pattern found.");
-      }
-      // TODO: Add VariableMatchPatternContext check here if it acts as a wildcard
-      // else if (armPatternCtx instanceof parser.VariableMatchPatternContext) {
-      //    hasWildcard = true;
-      //    console.log("[visitMatchExpr] Variable pattern found.");
-      // }
+      this.environment = this.environment.pushScope();
 
-
-      // --- Track ADT Variant Coverage ---
-      // Only track specific ADT variants if it's an ADT match AND we haven't found a wildcard yet.
-      if (isAdtMatch && !hasWildcard) {
-        // The checks for specific ADT patterns (AdtWithParam, BareAdt, etc.) go here.
-        // Note: The Wildcard check is removed from *inside* this block as it's handled above.
-        // Add VariableMatchPatternContext check if you implement it
-        // else if (armPatternCtx instanceof parser.VariableMatchPatternContext) {
-        //    hasWildcard = true;
-        // }
-        if (
-          armPatternCtx instanceof parser.AdtWithParamMatchPatternContext
-        ) {
-          // Pattern like Some(val) - FULLY covers the 'Some' variant
-          const constructorName = armPatternCtx.IDENTIFIER()[0].getText();
-          if (constructorName) {
-            // Optional: Check for redundancy if already covered
-            // if (fullyCoveredVariants.has(constructorName)) { ... }
-            fullyCoveredVariants.add(constructorName);
-          }
-        } else if (
-          armPatternCtx instanceof parser.AdtWithWildcardMatchPatternContext
-        ) {
-          // Pattern like Some(_) - FULLY covers the 'Some' variant
-          const constructorName = armPatternCtx.IDENTIFIER().getText();
-          if (constructorName) {
-            fullyCoveredVariants.add(constructorName);
-          }
-        } else if (armPatternCtx instanceof parser.BareAdtMatchPatternContext) {
-          // Pattern like None - FULLY covers the 'None' variant (as it takes no args)
-          const constructorName = armPatternCtx.IDENTIFIER().getText();
-          if (constructorName) {
-            fullyCoveredVariants.add(constructorName);
-          }
-        } else if (
-          armPatternCtx instanceof parser.AdtWithLiteralMatchPatternContext
-        ) {
-          // Pattern like Some("42") - Does NOT fully cover 'Some'.
-          // Do nothing regarding fullyCoveredVariants.
-          const constructorName = armPatternCtx.IDENTIFIER().getText();
-          // Optional: Check if constructorName is valid for the ADT type (error reporting)
-          if (
-            isAdtMatch &&
-            adtVariants &&
-            constructorName &&
-            !adtVariants.includes(constructorName)
-          ) {
-            this.reportError(
-              `Constructor '${constructorName}' does not belong to type '${adtTypeNameForCheck}'`,
-              armPatternCtx
-            );
-          }
-        } else if (armPatternCtx instanceof parser.LiteralMatchPatternContext) {
-          // Pattern like "test" - Does not cover ADT variants.
-          // Do nothing regarding fullyCoveredVariants.
-        }
-      } // End if (isAdtMatch && !hasWildcard)
-
-      // If wildcard found, stop tracking coverage
-      if (hasWildcard) {
-        // Optional: break; if no other per-arm processing needed after finding wildcard
-      }
-      // --- End Pattern Analysis ---
-
-      // Type check the pattern itself (binds variables, checks types)
-      // Pass the *applied* matched type to visitPattern
-      // The addCase callback is now only used internally by visitPattern for debugging/logging if needed
-      this.visitPattern(armPatternCtx, appliedMatchedType, (caseStr) => {
-        /* No-op or logging */
-      });
-
-      // Type check the expression of the arm
-      const armReturnType = this.visitExpr(arm.expr());
-      returnTypes.push(
-        this.applySubstitution(armReturnType, this.currentSubstitution)
-      ); // Apply substitution to arm result
-
-      // Pop the scope for the pattern variables
-      this.environment = this.environment.popScope();
-    }); // End loop through arms
-
-    // --- Final Exhaustiveness Check ---
-    if (isAdtMatch && adtVariants && !hasWildcard) {
-      // Check which variants were NOT fully covered
-      const missingVariants = adtVariants.filter(
-        (v) => !fullyCoveredVariants.has(v)
-      ); // Use fullyCoveredVariants
-
-      if (missingVariants.length > 0) {
-        this.reportError(
-          `Match expression on type '${adtTypeNameForCheck}' is not exhaustive. Missing cases: ${missingVariants.join(
-            ", "
-          )}`,
-          ctx // Report error on the whole match expression context
-        );
-        // If non-exhaustiveness is a type error, return Unknown
-        // return UnknownType;
-      }
-    } else if (appliedMatchedType === StringType && !hasWildcard) {
-      // String matching requires a wildcard for exhaustiveness
-      this.reportError(
-        `Match expression on type 'string' must be exhaustive. Add a wildcard pattern '_' or a variable pattern to handle all possible strings.`,
-        ctx
+      // 1. Analyze Pattern and Check Reachability
+      const patternInfo = this.analyzePattern(
+        armPatternCtx,
+        appliedMatchedType
       );
-      // Potentially set finalArmType to UnknownType here if non-exhaustive string match is an error
-      // finalArmType = UnknownType;
-    }
-    // TODO: Add similar check for NumberType?
-    // Add similar checks here for boolean, etc., if required
-    // else if (appliedMatchedType === BooleanType && !hasWildcard) {
-    //     // Check if both 'true' and 'false' literals were covered
-    //     // This requires tracking literal cases specifically, not just fullyCoveredVariants
-    //     // const coveredLiterals = ... collect literal strings from LiteralMatchPatternContext ...
-    //     // if (!coveredLiterals.has('true') || !coveredLiterals.has('false')) {
-    //     //    this.reportError(`Match on boolean is not exhaustive. Missing 'true' or 'false'.`, ctx);
-    //     // }
-    //     if (needsTrue || needsFalse) { ... report error ... }
-    // }
-    // --- End Final Check ---
+      console.log(
+        `[visitMatchExpr] Arm ${i}: Pattern='${armPatternCtx.getText()}', Info=${JSON.stringify(
+          patternInfo
+        )}`
+      );
 
-    // Check that all arms return the same type (Unification)
-    let finalArmType: ChicoryType = UnknownType;
-    if (returnTypes.length > 0) {
-      finalArmType = returnTypes[0]; // Start with the first arm's type
-      for (let i = 1; i < returnTypes.length; i++) {
+      const isReachable = this.checkReachabilityAndRecordCoverage(
+        patternInfo,
+        coverage,
+        armPatternCtx
+      );
+
+      if (!isReachable) {
+        // Error already reported by checkReachabilityAndRecordCoverage
+        // We still need to type-check the arm's expression for other errors,
+        // but its return type won't affect the overall match type.
+        console.log(
+          `[visitMatchExpr] Arm ${i} is unreachable. Skipping return type unification.`
+        );
+        this.visitPattern(armPatternCtx, appliedMatchedType); // Bind variables etc.
+        this.visitExpr(arm.expr()); // Type check expression
+        this.environment = this.environment.popScope();
+        continue; // Skip return type unification for unreachable arms
+      }
+
+      // 2. Type Check Pattern (bind variables)
+      this.visitPattern(armPatternCtx, appliedMatchedType);
+
+      // 3. Type Check Arm Expression
+      const armReturnType = this.visitExpr(arm.expr());
+      const appliedArmReturnType = this.applySubstitution(
+        armReturnType,
+        this.currentSubstitution
+      );
+      returnTypes.push(appliedArmReturnType); // Store for unification
+
+      // 4. Unify Return Types (Incremental)
+      if (firstArmType === null) {
+        firstArmType = appliedArmReturnType;
+      } else {
         const unificationResult = this.unify(
-          finalArmType,
-          returnTypes[i],
+          firstArmType,
+          appliedArmReturnType,
           this.currentSubstitution
         );
         if (unificationResult instanceof Error) {
           this.reportError(
-            `Match arms must return compatible types. Expected '${finalArmType}', found '${returnTypes[i]}'. ${unificationResult.message}`,
-            ctx.matchArm(i)!.expr() // Report error on the expression of the mismatched arm
+            `Match arms must return compatible types. Expected '${firstArmType}', found '${appliedArmReturnType}'. ${unificationResult.message}`,
+            arm.expr()
           );
-          finalArmType = UnknownType; // Set to Unknown on mismatch
-          break; // Stop checking further arms after first mismatch
+          firstArmType = UnknownType; // Set to Unknown on mismatch
+          // Don't break, continue checking other arms against the original firstArmType or Unknown
         } else {
-          // Unification might refine the type (e.g., bind type variables)
-          finalArmType = this.applySubstitution(
+          // Unification might refine the type
+          firstArmType = this.applySubstitution(
             unificationResult,
             this.currentSubstitution
           );
         }
       }
-    } else {
-      // Match expression with no arms? Should be a parser error, but handle defensively.
+
+      this.environment = this.environment.popScope();
+    } // End loop through arms
+
+    // --- Final Exhaustiveness Check ---
+    this.checkExhaustiveness(coverage, appliedMatchedType, ctx);
+
+    // --- Determine Final Type ---
+    let finalArmType = firstArmType ?? UnknownType; // Use firstArmType if valid, else Unknown
+    if (returnTypes.length === 0) {
       this.reportError("Match expression has no arms.", ctx);
       finalArmType = UnknownType;
     }
 
-    // Apply final substitutions to the unified type
+    // Apply final substitutions
     finalArmType = this.applySubstitution(
       finalArmType,
       this.currentSubstitution
     );
-    this.hints.push({ context: ctx, type: finalArmType.toString() }); // Add hint for the whole match expression
+    this.hints.push({ context: ctx, type: finalArmType.toString() });
+    console.log(`[visitMatchExpr] End. Final type: ${finalArmType.toString()}`);
     return finalArmType;
   }
+  // --- END REFACTORED visitMatchExpr ---
+
+  // --- BEGIN NEW HELPER METHODS for Match Expression ---
+
+  private initializeCoverage(
+    matchedType: ChicoryType,
+    ctx: parser.MatchExprContext
+  ): MatchCoverage {
+    const coverage: MatchCoverage = {
+      type: "other",
+      wildcardOrParamSeen: false,
+      processedPatterns: new Set(),
+    };
+
+    if (matchedType instanceof GenericType || matchedType instanceof AdtType) {
+      const adtName = matchedType.name;
+      let variants: string[] | null = null;
+
+      if (adtName === "Option") variants = ["Some", "None"];
+      else if (adtName === "Result") variants = ["Ok", "Err"];
+      else {
+        const constructors = this.constructors.filter(
+          (c) => c.adtName === adtName
+        );
+        if (constructors.length > 0) {
+          variants = constructors.map((c) => c.name);
+        }
+      }
+
+      if (variants) {
+        coverage.type = "adt";
+        coverage.adtName = adtName;
+        coverage.remainingVariants = new Set(variants);
+        coverage.partiallyCoveredVariants = new Set();
+      } else {
+        console.warn(
+          `[initializeCoverage] Type '${adtName}' looks like an ADT but no constructors found.`
+        );
+        // Treat as 'other' for coverage purposes if constructors aren't found
+      }
+    } else if (matchedType === StringType) {
+      coverage.type = "string";
+    } else if (matchedType === NumberType) {
+      coverage.type = "number";
+    } else if (matchedType === BooleanType) {
+      coverage.type = "boolean";
+      coverage.trueCovered = false;
+      coverage.falseCovered = false;
+    }
+
+    console.log(`[initializeCoverage] Initialized coverage:`, coverage);
+    return coverage;
+  }
+
+  private analyzePattern(
+    ctx: parser.MatchPatternContext,
+    matchedType: ChicoryType // Pass matched type for context if needed
+  ): PatternInfo {
+    const patternString = ctx.getText(); // Basic unique representation
+
+    if (ctx instanceof parser.AdtWithParamMatchPatternContext) {
+      // Pattern like Some(x)
+      return {
+        type: "adt_param",
+        variantName: ctx.IDENTIFIER()[0].getText(),
+        patternString: `${ctx.IDENTIFIER()[0].getText()}(param)`, // Canonical string
+      };
+    } else if (ctx instanceof parser.AdtWithWildcardMatchPatternContext) {
+      // Pattern like Some(_)
+      return {
+        type: "adt_wildcard",
+        variantName: ctx.IDENTIFIER().getText(),
+        patternString: `${ctx.IDENTIFIER().getText()}(_)`, // Canonical string
+      };
+    } else if (ctx instanceof parser.AdtWithLiteralMatchPatternContext) {
+      // Pattern like Some(1) or Some("hi")
+      const literalCtx = ctx.literal();
+      let literalValue: string | number | boolean = literalCtx.getText();
+      if (literalCtx instanceof parser.NumberLiteralContext)
+        literalValue = parseFloat(literalValue);
+      if (literalCtx instanceof parser.BooleanLiteralContext)
+        literalValue = literalValue === "true";
+      return {
+        type: "adt_literal",
+        variantName: ctx.IDENTIFIER().getText(),
+        literalValue: literalValue,
+        patternString: `${ctx.IDENTIFIER().getText()}(${literalCtx.getText()})`, // Use literal text
+      };
+    } else if (ctx instanceof parser.BareAdtOrVariableMatchPatternContext) {
+      const idName = ctx.IDENTIFIER().getText();
+      let isBareAdt = false;
+      if (
+        matchedType instanceof AdtType ||
+        matchedType instanceof GenericType
+      ) {
+        const constructor = this.constructors.find(
+          (c) => c.adtName === matchedType.name && c.name === idName
+        );
+        // Check if it's a *nullary* constructor
+        if (
+          constructor &&
+          constructor.type instanceof FunctionType &&
+          constructor.type.paramTypes.length === 0
+        ) {
+          // Pattern like None
+          return {
+            type: "adt_bare",
+            variantName: idName,
+            patternString: idName, // Bare name is unique string
+          };
+        }
+      }
+      if (!isBareAdt) {
+        console.log(
+          `[analyzePattern] Treating identifier '${idName}' as a variable pattern.`
+        );
+        return { type: "variable", patternString: "var" }; // Canonical string for variable pattern
+      }
+    } else if (ctx instanceof parser.LiteralMatchPatternContext) {
+      // Pattern like 1 or "hi" or true
+      const literalCtx = ctx.literal();
+      let literalValue: string | number | boolean = literalCtx.getText();
+      if (literalCtx instanceof parser.NumberLiteralContext)
+        literalValue = parseFloat(literalValue);
+      if (literalCtx instanceof parser.BooleanLiteralContext)
+        literalValue = literalValue === "true";
+      return {
+        type: "literal",
+        literalValue: literalValue,
+        patternString: literalCtx.getText(), // Literal text is unique string
+      };
+    } else if (ctx instanceof parser.WildcardMatchPatternContext) {
+      // Pattern _
+      return { type: "wildcard", patternString: "_" };
+    }
+
+    console.warn(`[analyzePattern] Unknown pattern type: ${patternString}`);
+    return { type: "unknown", patternString };
+  }
+
+  private checkReachabilityAndRecordCoverage(
+    patternInfo: PatternInfo,
+    coverage: MatchCoverage,
+    ctx: parser.MatchPatternContext
+  ): boolean {
+    let isReachable = true;
+    const patternString = patternInfo.patternString; // Use the canonical string
+
+    // --- Simple Duplicate Check ---
+    // This catches identical literals, bare ADTs, or canonical wildcards/params
+    if (coverage.processedPatterns?.has(patternString)) {
+      this.reportError(
+        `Unreachable pattern: '${ctx.getText()}' is already covered.`,
+        ctx
+      );
+      isReachable = false;
+      // Don't return yet, still need to update coverage state potentially
+    }
+    coverage.processedPatterns?.add(patternString);
+
+    // --- Type-Specific Reachability and Coverage Update ---
+    switch (coverage.type) {
+      case "adt":
+        if (!coverage.remainingVariants) break; // Should not happen
+
+        const variantName = patternInfo.variantName;
+        if (!variantName) {
+          // This pattern doesn't target a specific variant (e.g., _, variable, literal)
+          if (
+            patternInfo.type === "wildcard" ||
+            patternInfo.type === "variable"
+          ) {
+            if (coverage.wildcardOrParamSeen) {
+              // Already covered by a previous wildcard/param
+              this.reportError(
+                `Unreachable pattern: '${ctx.getText()}' is covered by a previous wildcard or variable pattern.`,
+                ctx
+              );
+              isReachable = false;
+            }
+            coverage.remainingVariants.clear(); // Covers everything
+            coverage.wildcardOrParamSeen = true;
+          } else if (patternInfo.type === "literal") {
+            if (coverage.wildcardOrParamSeen) {
+              // Already covered by wildcard/param
+              this.reportError(
+                `Unreachable pattern: Literal '${ctx.getText()}' is covered by a previous wildcard or variable pattern.`,
+                ctx
+              );
+              isReachable = false;
+            }
+            // Literals don't affect ADT variant coverage directly
+          }
+          break; // Exit ADT handling for non-variant patterns
+        }
+
+        // Pattern targets a specific variant (adt_param, adt_wildcard, adt_literal, adt_bare)
+        const isFullyCovered = !coverage.remainingVariants.has(variantName);
+
+        if (
+          patternInfo.type === "adt_param" ||
+          patternInfo.type === "adt_wildcard" ||
+          patternInfo.type === "adt_bare"
+        ) {
+          // These patterns fully cover the variant
+          if (isFullyCovered) {
+            this.reportError(
+              `Unreachable pattern: Variant '${variantName}' is already fully covered.`,
+              ctx
+            );
+            isReachable = false;
+          }
+          coverage.remainingVariants.delete(variantName);
+          coverage.partiallyCoveredVariants?.delete(variantName); // Remove from partial if now fully covered
+          coverage.wildcardOrParamSeen = coverage.remainingVariants.size === 0; // Check if this covers the last variant
+        } else if (patternInfo.type === "adt_literal") {
+          // Literal pattern only partially covers
+          if (isFullyCovered) {
+            this.reportError(
+              `Unreachable pattern: Variant '${variantName}' is already fully covered, making literal match '${ctx.getText()}' unreachable.`,
+              ctx
+            );
+            isReachable = false;
+          }
+          coverage.partiallyCoveredVariants?.add(variantName);
+          // Does NOT remove from remainingVariants
+        }
+        break;
+
+      case "string":
+      case "number":
+      case "other": // Treat 'other' like string/number for wildcard/param coverage
+        if (
+          patternInfo.type === "wildcard" ||
+          patternInfo.type === "variable"
+        ) {
+          if (coverage.wildcardOrParamSeen) {
+            this.reportError(
+              `Unreachable pattern: '${ctx.getText()}' is covered by a previous wildcard or variable pattern.`,
+              ctx
+            );
+            isReachable = false;
+          }
+          coverage.wildcardOrParamSeen = true;
+        } else if (
+          patternInfo.type === "literal" ||
+          patternInfo.type.startsWith("adt_")
+        ) {
+          // Literals or ADT checks within a string/number match context
+          if (coverage.wildcardOrParamSeen) {
+            this.reportError(
+              `Unreachable pattern: '${ctx.getText()}' is covered by a previous wildcard or variable pattern.`,
+              ctx
+            );
+            isReachable = false;
+          }
+          // Literals don't mark string/number as fully covered
+        }
+        break;
+
+      case "boolean":
+        if (
+          patternInfo.type === "wildcard" ||
+          patternInfo.type === "variable"
+        ) {
+          if (
+            coverage.wildcardOrParamSeen ||
+            (coverage.trueCovered && coverage.falseCovered)
+          ) {
+            this.reportError(
+              `Unreachable pattern: '${ctx.getText()}' is covered by previous patterns.`,
+              ctx
+            );
+            isReachable = false;
+          }
+          coverage.wildcardOrParamSeen = true;
+          coverage.trueCovered = true;
+          coverage.falseCovered = true;
+        } else if (patternInfo.type === "literal") {
+          if (coverage.wildcardOrParamSeen) {
+            this.reportError(
+              `Unreachable pattern: Literal '${ctx.getText()}' is covered by a previous wildcard or variable pattern.`,
+              ctx
+            );
+            isReachable = false;
+          }
+          if (patternInfo.literalValue === true) {
+            if (coverage.trueCovered) {
+              this.reportError(
+                `Unreachable pattern: 'true' is already covered.`,
+                ctx
+              );
+              isReachable = false;
+            }
+            coverage.trueCovered = true;
+          } else if (patternInfo.literalValue === false) {
+            if (coverage.falseCovered) {
+              this.reportError(
+                `Unreachable pattern: 'false' is already covered.`,
+                ctx
+              );
+              isReachable = false;
+            }
+            coverage.falseCovered = true;
+          }
+          // Check if both are now covered
+          if (coverage.trueCovered && coverage.falseCovered) {
+            coverage.wildcardOrParamSeen = true;
+          }
+        } else if (patternInfo.type.startsWith("adt_")) {
+          // ADT checks within a boolean match context
+          if (coverage.wildcardOrParamSeen) {
+            this.reportError(
+              `Unreachable pattern: '${ctx.getText()}' is covered by previous patterns.`,
+              ctx
+            );
+            isReachable = false;
+          }
+          // ADT patterns don't mark boolean as covered
+        }
+        break;
+    }
+
+    console.log(
+      `[checkReachability] Reachable=${isReachable}, Updated Coverage=`,
+      coverage
+    );
+    return isReachable;
+  }
+
+  private checkExhaustiveness(
+    coverage: MatchCoverage,
+    matchedType: ChicoryType,
+    ctx: parser.MatchExprContext // For reporting error context
+  ): void {
+    let isExhaustive = true;
+    let errorMessage = "";
+
+    switch (coverage.type) {
+      case "adt":
+        if (coverage.remainingVariants && coverage.remainingVariants.size > 0) {
+          isExhaustive = false;
+          errorMessage = `Match expression on type '${
+            coverage.adtName
+          }' is not exhaustive. Missing cases: ${Array.from(
+            coverage.remainingVariants
+          ).join(", ")}`;
+        }
+        break;
+      case "string":
+      case "number":
+      case "other":
+        if (!coverage.wildcardOrParamSeen) {
+          isExhaustive = false;
+          errorMessage = `Match expression on type '${matchedType.toString()}' must be exhaustive. Add a wildcard pattern '_' or a variable pattern to handle all possible values.`;
+        }
+        break;
+      case "boolean":
+        if (
+          !coverage.wildcardOrParamSeen &&
+          (!coverage.trueCovered || !coverage.falseCovered)
+        ) {
+          isExhaustive = false;
+          const missing: string[] = [];
+          if (!coverage.trueCovered) missing.push("'true'");
+          if (!coverage.falseCovered) missing.push("'false'");
+          errorMessage = `Match expression on type 'boolean' is not exhaustive. Missing cases: ${missing.join(
+            " and "
+          )}.`;
+        }
+        break;
+    }
+
+    if (!isExhaustive) {
+      console.log(`[checkExhaustiveness] Non-exhaustive match detected.`);
+      this.reportError(errorMessage, ctx);
+    } else {
+      console.log(`[checkExhaustiveness] Match is exhaustive.`);
+    }
+  }
+
+  // --- END NEW HELPER METHODS ---
 
   visitMatchArm(
     ctx: parser.MatchArmContext,
@@ -3227,7 +3517,7 @@ export class ChicoryTypeChecker {
     addCase: (str: string) => void
   ): ChicoryType {
     this.environment = this.environment.pushScope();
-    this.visitPattern(ctx.matchPattern(), matchedType, addCase); // Check pattern and declare any variables
+    this.visitPattern(ctx.matchPattern(), matchedType); // Check pattern and declare any variables
     const armExprType = this.visitExpr(ctx.expr());
     this.environment = this.environment.popScope();
     return armExprType;
@@ -3235,9 +3525,8 @@ export class ChicoryTypeChecker {
 
   visitPattern(
     ctx: parser.MatchPatternContext,
-    matchedType: ChicoryType,
-    // 'addCase' is primarily for exhaustiveness/logging, not core typing here
-    addCase: (str: string) => void
+    matchedType: ChicoryType
+    // Removed addCase parameter
   ): void {
     // Apply substitution to matchedType *before* checking its instance type
     matchedType = this.applySubstitution(matchedType, this.currentSubstitution); // Use main substitution
@@ -3258,7 +3547,7 @@ export class ChicoryTypeChecker {
         this.hints.push({ context: ctx, type: UnknownType.toString() });
       }
       // Add similar handling for other patterns that bind variables.
-      addCase(ctx.getText()); // Add case for exhaustiveness logic if needed
+      // addCase(ctx.getText()); // Removed call
       return; // Skip further type checks for this pattern
     }
 
@@ -3273,9 +3562,9 @@ export class ChicoryTypeChecker {
       )
         .IDENTIFIER()
         .map((id) => id.getText());
-      addCase(`${adtName}(*)`);
+      // addCase(`${adtName}(*)`); // Removed call
       console.log(
-        `[visitPattern] Adding case (ADT with param): ${adtName}(${paramName})`
+        `[visitPattern] Checking pattern (ADT with param): ${adtName}(${paramName})`
       );
 
       let baseTypeName: string | null = null;
@@ -3405,9 +3694,9 @@ export class ChicoryTypeChecker {
       ).literal();
       const literalType = this.visitLiteral(literalCtx);
       const literalValueStr = literalCtx.getText();
-      addCase(`${adtName}(*)`); // Use wildcard for exhaustiveness tracking
+      // addCase(`${adtName}(*)`); // Removed call
       console.log(
-        `[visitPattern] Adding case (ADT with literal): ${adtName}(${literalValueStr})`
+        `[visitPattern] Checking pattern (ADT with literal): ${adtName}(${literalValueStr})`
       );
 
       let baseTypeName: string | null = null;
@@ -3519,10 +3808,12 @@ export class ChicoryTypeChecker {
       const literalCtx = (ctx as parser.LiteralMatchPatternContext).literal();
       const literalType = this.visitLiteral(literalCtx);
       const literalValueStr = literalCtx.getText();
-      addCase(literalValueStr);
-      console.log(`[visitPattern] Adding case (literal): ${literalValueStr}`);
+      // addCase(literalValueStr); // Removed call
+      console.log(
+        `[visitPattern] Checking pattern (literal): ${literalValueStr}`
+      );
 
-      // **** Crucial Change: Unify matchedType with literalType USING this.currentSubstitution ****
+      // Unify matchedType with literalType USING this.currentSubstitution
       const result = this.unify(
         matchedType, // The type of the value being matched
         literalType, // The type of the literal in the pattern
@@ -3548,73 +3839,103 @@ export class ChicoryTypeChecker {
       }
 
       // --- Other pattern types (BareAdt, Wildcard, etc.) ---
-    } else if (ctx.ruleContext instanceof parser.BareAdtMatchPatternContext) {
-      // ... (existing logic is likely okay, ensure constructor checks use baseTypeName) ...
-      const adtName = (ctx as parser.BareAdtMatchPatternContext)
-        .IDENTIFIER()
+    } else if (ctx.ruleContext instanceof parser.BareAdtOrVariableMatchPatternContext) {
+      const varName = (ctx as parser.BareAdtOrVariableMatchPatternContext)
+        .IDENTIFIER()!
         .getText();
-      addCase(adtName);
-      console.log(`[visitPattern] Adding case (bare ADT): ${adtName}`);
 
-      let baseTypeName: string | null = null;
+      let isBareAdt = false;
       if (
         matchedType instanceof AdtType ||
         matchedType instanceof GenericType
       ) {
-        baseTypeName = matchedType.name;
-      } else if (matchedType instanceof TypeVariable) {
-        console.warn(
-          `[visitPattern] Cannot fully verify bare ADT pattern ${adtName} against unknown type ${matchedType}.`
+        const constructor = this.constructors.find(
+          (c) => c.adtName === matchedType.name && c.name === varName
         );
-        return;
-      } else {
-        this.reportError(
-          `Cannot match type '${matchedType}' against ADT pattern '${adtName}'`,
-          ctx
-        );
-        return;
+        if (
+          constructor &&
+          constructor.type instanceof FunctionType &&
+          constructor.type.paramTypes.length === 0
+        ) {
+          isBareAdt = true; // Handled by BareAdtOrVariableMatchPatternContext
+        }
       }
 
-      const constructor = this.constructors.find(
-        (c) => c.name === adtName && c.adtName === baseTypeName
-      );
-      if (!constructor) {
-        this.reportError(
-          `Constructor '${adtName}' does not exist on type '${baseTypeName}'`,
-          ctx
+      if (!isBareAdt) {
+        console.log(
+          `[visitPattern] Binding variable pattern '${varName}' with type '${matchedType}'`
         );
+        // Bind the variable in the current scope with the matched type
+        this.environment.declare(varName, matchedType, ctx, (str) =>
+          this.reportError(str, ctx)
+        );
+        this.hints.push({ context: ctx, type: matchedType.toString() });
       } else {
+        const adtName = (ctx as parser.BareAdtOrVariableMatchPatternContext)
+          .IDENTIFIER()
+          .getText();
+        // addCase(adtName); // Removed call
+        console.log(`[visitPattern] Checking pattern (bare ADT): ${adtName}`);
+
+        let baseTypeName: string | null = null;
         if (
-          constructor.type instanceof FunctionType &&
-          constructor.type.paramTypes.length > 0
+          matchedType instanceof AdtType ||
+          matchedType instanceof GenericType
         ) {
+          baseTypeName = matchedType.name;
+        } else if (matchedType instanceof TypeVariable) {
+          console.warn(
+            `[visitPattern] Cannot fully verify bare ADT pattern ${adtName} against unknown type ${matchedType}.`
+          );
+          return;
+        } else {
           this.reportError(
-            `Constructor '${adtName}' expects arguments, but none were provided.`,
+            `Cannot match type '${matchedType}' against ADT pattern '${adtName}'`,
             ctx
           );
+          return;
         }
-        // **** Check type compatibility using unification ****
-        // We need the expected type (e.g., Result<T,E>) and the actual type (e.g., Result<string, number>)
-        // Unify the matchedType with the constructor's return type *instantiated* if generic
-        let constructorReturnType =
-          constructor.type instanceof FunctionType
-            ? constructor.type.returnType
-            : UnknownType; // Adjust if constructor type isn't always FunctionType
-        // Instantiate if needed (similar to param logic but for return type)
-        // ... (instantiation logic - potentially complex, maybe skip detailed check here if pattern shape is main goal)
-        // For now, mainly rely on name and arity check for bare ADT.
-        // A stricter check could unify matchedType with potentially instantiated constructorReturnType.
+
+        const constructor = this.constructors.find(
+          (c) => c.name === adtName && c.adtName === baseTypeName
+        );
+        if (!constructor) {
+          this.reportError(
+            `Constructor '${adtName}' does not exist on type '${baseTypeName}'`,
+            ctx
+          );
+        } else {
+          if (
+            constructor.type instanceof FunctionType &&
+            constructor.type.paramTypes.length > 0
+          ) {
+            this.reportError(
+              `Constructor '${adtName}' expects arguments, but none were provided.`,
+              ctx
+            );
+          }
+          // **** Check type compatibility using unification ****
+          // We need the expected type (e.g., Result<T,E>) and the actual type (e.g., Result<string, number>)
+          // Unify the matchedType with the constructor's return type *instantiated* if generic
+          let constructorReturnType =
+            constructor.type instanceof FunctionType
+              ? constructor.type.returnType
+              : UnknownType; // Adjust if constructor type isn't always FunctionType
+          // Instantiate if needed (similar to param logic but for return type)
+          // ... (instantiation logic - potentially complex, maybe skip detailed check here if pattern shape is main goal)
+          // For now, mainly rely on name and arity check for bare ADT.
+          // A stricter check could unify matchedType with potentially instantiated constructorReturnType.
+        }
       }
     } else if (
       ctx.ruleContext instanceof parser.AdtWithWildcardMatchPatternContext
     ) {
-      // ... (existing logic is likely okay, ensure constructor checks use baseTypeName) ...
       const adtName = (ctx as parser.AdtWithWildcardMatchPatternContext)
         .IDENTIFIER()
         .getText();
-      addCase(`${adtName}(*)`);
+      // addCase(`${adtName}(*)`); // Removed call
       console.log(
-        `[visitPattern] Adding case (ADT with wildcard): ${adtName}(_)`
+        `[visitPattern] Checking pattern (ADT with wildcard): ${adtName}(_)`
       );
 
       let baseTypeName: string | null = null;
@@ -3658,10 +3979,10 @@ export class ChicoryTypeChecker {
         return;
       }
     } else if (ctx.ruleContext instanceof parser.WildcardMatchPatternContext) {
-      addCase("*");
-      console.log(`[visitPattern] Adding case (wildcard): _`);
-      // Always matches
-    } else {
+      // Always matches, no specific type check needed here
+      console.log(`[visitPattern] Checking pattern (wildcard): _`);
+    }
+    else {
       console.error(
         `[visitPattern] Unhandled pattern context type: ${ctx.constructor.name}`
       );

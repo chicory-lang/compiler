@@ -121,3 +121,14 @@ test("Inexhaustive matches should not type check", () => {
     const result = compile(code);
     expect(result.errors).toHaveLength(1);
 })
+
+test("Inexhaustive string matches should not type check (inferred as string)", () => {
+  const code = `
+    const toString = s => match (s) {
+      "str" => 1
+      "str2" => 2
+    }`;
+  const result = compile(code);
+  // should fail exhaustiveness check without a param/wildcard arm
+  expect(result.errors).toHaveLength(1);
+})

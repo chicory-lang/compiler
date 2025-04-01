@@ -161,7 +161,7 @@ matchPattern
     : IDENTIFIER '(' '_' ')'        #AdtWithWildcardMatchPattern
     | IDENTIFIER '(' IDENTIFIER ')' #AdtWithParamMatchPattern
     | IDENTIFIER '(' literal ')'    #AdtWithLiteralMatchPattern
-    | IDENTIFIER                    #BareAdtMatchPattern
+    | IDENTIFIER                    #BareAdtOrVariableMatchPattern
     | '_'                           #WildcardMatchPattern
     | literal                       #LiteralMatchPattern
     ;

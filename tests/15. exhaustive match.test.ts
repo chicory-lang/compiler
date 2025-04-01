@@ -166,3 +166,89 @@ match (result) {
   const result = compile(code);
   expect(result.errors).toHaveLength(0);
 })
+
+test('Cases in match expr against custom option-like adt', () => {
+  const code = `type MyOpt<T> = MySome(T) | MyNone
+match (MySome(1)) {
+  MySome(2) => { "int" }
+  MyNone => {
+    const y = 5 + 1
+    "e"
+  }
+}`;
+  const result = compile(code);
+  // We expect an error because MySome(2) does not cover MySome(*)
+  expect(result.errors).toHaveLength(1);
+});
+
+
+test('Cases in match expr against custom option-like adt (covered by param)', () => {
+  const code = `type MyOpt<T> = MySome(T) | MyNone
+match (MySome(1)) {
+  MySome(p) => { "hi" }
+  MyNone => "hi"
+}`;
+  const result = compile(code);
+  // We expect an error because MySome(2) does not cover MySome(*)
+  expect(result.errors).toHaveLength(0);
+});
+
+
+test('Cases in match expr against custom option-like adt (covered by wildcard)', () => {
+  const code = `type MyOpt<T> = MySome(T) | MyNone
+match (MySome(1)) {
+  MySome(_) => { "int" }
+  MyNone => "e"
+}`;
+  const result = compile(code);
+  expect(result.errors).toHaveLength(0);
+});
+
+
+test('Unreachable arm (wildcard coverage)', () => {
+  const code = `match (Some(1)) {
+  Some(_) => "wildcard in Some matches every kind of Some"
+  Some(1) => "cannot be reached, because all possible Some(*) matches are covered"
+  None => "e"
+}`;
+  const result = compile(code);
+  expect(result.errors).toHaveLength(1);
+});
+
+test('Unreachable arm with (param coverage)', () => {
+  const code = `match (Some(1)) {
+  Some(a) => "param in Some matches every kind of Some"
+  Some(_) => "cannot be reached, because all possible Some(*) matches are covered"
+  None => "e"
+}`;
+  const result = compile(code);
+  expect(result.errors).toHaveLength(1);
+});
+
+test('Unreachable arm (duplicate coverage)', () => {
+  const code = `match (Some(1)) {
+  Some(a) => "param in Some matches every kind of Some"
+  None => "none match"
+  None => "duplicated none match"
+}`;
+  const result = compile(code);
+  expect(result.errors).toHaveLength(1);
+});
+
+test('Unreachable arm (strings w/ wildcard)', () => {
+  const code = `match ("str") {
+  _ => "wildcard in Some matches every kind of Some"
+  "str" => "cannot be reached, because all possible Some(*) matches are covered"
+}`;
+  const result = compile(code);
+  expect(result.errors).toHaveLength(1);
+});
+
+test('Unreachable arm (strings w/ param)', () => {
+  const code = `match ("str") {
+  a => "wildcard in Some matches every kind of Some"
+  "str" => "cannot be reached, because all possible Some(*) matches are covered"
+}`;
+  const result = compile(code);
+  expect(result.errors).toHaveLength(1);
+});
