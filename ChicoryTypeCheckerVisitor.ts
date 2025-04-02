@@ -3283,7 +3283,7 @@ export class ChicoryTypeChecker {
         `Unreachable pattern: '${ctx.getText()}' is already covered.`,
         ctx
       );
-      isReachable = false;
+      return false;
       // Don't return yet, still need to update coverage state potentially
     }
     coverage.processedPatterns?.add(patternString);
