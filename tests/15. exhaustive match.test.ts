@@ -252,3 +252,25 @@ test('Unreachable arm (strings w/ param)', () => {
   const result = compile(code);
   expect(result.errors).toHaveLength(1);
 });
+
+
+test('Nullary ADT (covered)', () => {
+  const code = `type Friend = Greg | Jeremy
+const strTest = friend => match (friend) {
+  Greg => 1
+  Jeremy => 2
+}`;
+  const result = compile(code);
+  expect(result.errors).toHaveLength(0);
+});
+
+test('Nullary ADT (not covered)', () => {
+  const code = `type Friend = Greg | Jeremy | Peter
+const strTest = friend => match (friend) {
+  Greg => 1
+  Jeremy => 2
+}`;
+  const result = compile(code);
+  // Missing Peter
+  expect(result.errors).toHaveLength(1);
+});
