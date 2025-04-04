@@ -506,22 +506,21 @@ export class ChicoryTypeChecker {
         return type; // Optimization: return original if element didn't change
       }
       const result = new ArrayType(substitutedElementType);
-      
+
       return result;
     }
 
     // Add case for GenericType
     if (type instanceof GenericType) {
-      
       if (type.typeArguments.length === 0 && substitution.has(type.name)) {
         const substituted = this.applySubstitution(
           substitution.get(type.name)!,
           substitution
         );
-        
+
         return substituted;
       }
-      
+
       let changed = false;
       const newArgs = type.typeArguments.map((t) => {
         const newT = this.applySubstitution(t, substitution);
@@ -1383,9 +1382,10 @@ export class ChicoryTypeChecker {
     typeVarsInSig?: Map<string, TypeVariable> // Added map
   ): ChicoryType {
     const recordType = new RecordType(new Map());
-    ctx.recordTypeAnontation().forEach((kv) => {
+    ctx.recordTypeAnnotation().forEach((kv) => {
       const id = kv.IDENTIFIER()[0].getText();
       let val: ChicoryType;
+      const isOptional = kv.QUESTION() !== null;
 
       // Pass map down when resolving field types
       if (kv.primitiveType()) {
@@ -1409,7 +1409,25 @@ export class ChicoryTypeChecker {
         this.reportError(`Unknown record type annotation: ${kv.getText()}`, kv);
         val = UnknownType;
       }
-      recordType.fields.set(id, val);
+
+      let finalFieldType: ChicoryType = val;
+      if (isOptional) {
+        // If field is optional (e.g., name?: string)
+        const optionGeneric = this.environment.getType("Option"); // Get the Option<T> definition
+
+        if (
+          optionGeneric instanceof GenericType &&
+          optionGeneric.typeArguments.length > 0
+        ) {
+          // Wrap the baseFieldType in Option: Option<baseFieldType>
+          finalFieldType = new GenericType(optionGeneric.name, [val]);
+          this.prelude.requireOptionType(); // Mark Option prelude code as needed
+        } else {
+          throw new Error("Option<T> builtin is not correctly defined");
+        }
+      }
+      
+      recordType.fields.set(id, finalFieldType);
     });
     return recordType;
   }

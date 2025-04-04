@@ -50,9 +50,9 @@ adtOption
 
 adtTypeAnnotation: IDENTIFIER ':' (primitiveType | IDENTIFIER);
 
-recordType: '{' NL* recordTypeAnontation (',' NL* recordTypeAnontation)* ','? NL* '}';
+recordType: '{' NL* recordTypeAnnotation (',' NL* recordTypeAnnotation)* ','? NL* '}';
 
-recordTypeAnontation: IDENTIFIER ':' (primitiveType | recordType | IDENTIFIER | tupleType | functionType);
+recordTypeAnnotation: IDENTIFIER QUESTION? ':' (primitiveType | recordType | IDENTIFIER | tupleType | functionType);
 
 tupleType: '[' NL* typeExpr (',' NL* typeExpr)* ','? NL* ']';
 
@@ -240,6 +240,8 @@ TRUE_KWD: 'true';
 FALSE_KWD: 'false';
 
 IDENTIFIER: [a-zA-Z_][a-zA-Z0-9_]*;
+
+QUESTIION: '?';
 
 OPERATOR: '+' | '-' | '*' | '/' | '==' | '!=' | '<' | '>' | '<=' | '>=' | '&&' | '||';
 
