@@ -9,11 +9,11 @@ import {
 test("should define and typecheck record with optional field", () => {
   const chicoryCode = `
       type User = {
-        id: number
+        id: number,
         name?: string // Optional field
       }
 
-      let user1: User = { id: 1, name: Some("Alice") }
+      let user1: User = { id: 1, name: Some("Alice") } // Note that name is expected to be an Option<string>
       let user2: User = { id: 2 } // name is omitted, should be valid
 
       // Accessing optional field should yield Option<string>
@@ -41,13 +41,13 @@ test("should define and typecheck record with optional field", () => {
 
   // Basic check that code compiles
   expect(code).toContain('let user1 = { id: 1, name: Some("Alice") };');
-  expect(code).toContain("let user2 = { id: 2 };");
+  expect(code).toContain("let user2 = { id: 2, name: None() };");
 });
 
 test("should fail typecheck if required field is missing", () => {
   const chicoryCode = `
       type User = {
-        id: number // Required field
+        id: number, // Required field
         name?: string
       }
 
@@ -67,7 +67,7 @@ test("should fail typecheck if required field is missing", () => {
 test("should fail typecheck if optional field assigned wrong type", () => {
   const chicoryCode = `
       type Config = {
-        timeout?: number
+        timeout?: number,
         retries: number
       }
 
