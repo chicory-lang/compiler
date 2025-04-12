@@ -7,6 +7,7 @@ import {
   ArrayType,
   FunctionType,
   GenericType,
+  RecordType, // Added import
 } from "./ChicoryTypes";
 
 export class ChicoryParserVisitor {
@@ -50,32 +51,61 @@ export class ChicoryParserVisitor {
 
   // Main entry point for compilation
   visitProgram(ctx: parser.ProgramContext): string {
-    const lines: string[] = ctx.stmt().map((stmt) => this.visitStmt(stmt));
+    const lines: string[] = ctx.stmt().map((stmt) => {
+      try {
+        const result = this.visitStmt(stmt);
+        console.log(`[visitProgram] Visited stmt: ${stmt.getText().substring(0, 50)}... -> JS length: ${result?.length ?? 'undefined'}`); // LOGGING
+        return result;
+      } catch (e) {
+        const errorMsg = e instanceof Error ? e.message : String(e);
+        const stack = e instanceof Error ? e.stack : '';
+        console.error(`[visitProgram] ERROR visiting statement: ${stmt.getText().substring(0, 80)}...`); // LOGGING
+        console.error(`  Error: ${errorMsg}`); // LOGGING
+        console.error(`  Stack: ${stack}`); // LOGGING
+        // Report a generic error associated with the statement context
+        this.reportError(`Internal error during compilation of statement: ${errorMsg}`, stmt);
+        return `/* ERROR visiting statement: ${stmt.getText().substring(0, 50)}... */`; // Return placeholder
+      }
+    });
     if (ctx.exportStmt()) {
-      lines.push(this.visitExportStmt(ctx.exportStmt()!));
+      try { // Also wrap export statement visit
+        lines.push(this.visitExportStmt(ctx.exportStmt()!));
+      } catch (e) {
+          const errorMsg = e instanceof Error ? e.message : String(e);
+          console.error(`[visitProgram] ERROR visiting export statement: ${ctx.exportStmt()!.getText()}`); // LOGGING
+          console.error(`  Error: ${errorMsg}`); // LOGGING
+          this.reportError(`Internal error during compilation of export statement: ${errorMsg}`, ctx.exportStmt()!);
+          lines.push(`/* ERROR visiting export statement */`);
+      }
     }
     return lines.join("\n");
   }
 
   visitStmt(ctx: parser.StmtContext): string {
+    let resultJs = ""; // Initialize
     if (ctx.assignStmt()) {
-      return `${this.visitAssignStmt(ctx.assignStmt()!)};`;
+      resultJs = `${this.visitAssignStmt(ctx.assignStmt()!)};`;
     } else if (ctx.typeDefinition()) {
-      // No semi-colon for type definitions
-      return `${this.visitTypeDefinition(ctx.typeDefinition()!)}`;
+      resultJs = `${this.visitTypeDefinition(ctx.typeDefinition()!)}`;
     } else if (ctx.importStmt()) {
-      return `${this.visitImportStmt(ctx.importStmt()!)};`;
+      resultJs = `${this.visitImportStmt(ctx.importStmt()!)};`;
     } else if (ctx.expr()) {
-      return `${this.visitExpr(ctx.expr()!)};`;
-    }
+      resultJs = `${this.visitExpr(ctx.expr()!)};`;
+    } else {
     this.reportError(`Unknown statement type: ${ctx.getText()}`, ctx);
-    return ""; // Continue processing with a no-op
+    resultJs = ""; // Continue processing with a no-op
   }
+  // console.log(`[visitStmt] Input: ${ctx.getText().substring(0, 50)}... Output JS: ${resultJs}`); // LOGGING REMOVED
+  return resultJs;
+}
 
   visitAssignStmt(ctx: parser.AssignStmtContext): string {
     const assignKwd = ctx.assignKwd().getText(); // 'let' or 'const'
     const targetCtx = ctx.assignTarget();
-    const expr = this.visitExpr(ctx.expr());
+    // Get the type associated with the *assignment target* by the type checker.
+    // This should be the final, unified type considering annotations.
+    const expectedType = this.expressionTypes.get(targetCtx);
+    const expr = this.visitExpr(ctx.expr(), expectedType); // Pass expected type to RHS visitor
 
     let targetJs: string;
     if (targetCtx.IDENTIFIER()) {
@@ -114,16 +144,16 @@ export class ChicoryParserVisitor {
 
   visitTypeDefinition(ctx: parser.TypeDefinitionContext): string {
     const typeName = ctx.IDENTIFIER().getText();
-    const typeExpr = ctx.typeExpr().primaryTypeExpr();
+    const typeExpr = ctx.typeExpr().primaryTypeExpr(); // Keep reference for erasure check later
 
-    // Check if this is an ADT definition
-    if (typeExpr.adtType()) {
-      // Get constructors from the type checker
-      const constructors = this.typeChecker
-        .getConstructors()
-        .filter((c) => c.adtName === typeName);
+    // --- Generate ADT Constructors if they exist ---
+    console.log(`[visitTypeDefinition] Checking for constructors for type '${typeName}'`);
+    const allConstructors = this.typeChecker.getConstructors();
+    const constructors = allConstructors.filter((c) => c.adtName === typeName);
+    console.log(`[visitTypeDefinition] Found ${constructors.length} constructors for ADT '${typeName}':`, constructors.map(c => c.name));
 
-      // Generate constructor functions for each ADT variant
+    if (constructors.length > 0) {
+      // Generate constructor functions for each ADT variant found
       const constructorFunctions = constructors
         .map((constructor) => {
           const constructorName = constructor.name;
@@ -141,16 +171,21 @@ export class ChicoryParserVisitor {
           }
         })
         .join("\n");
-
+      // Return the generated functions. We don't erase ADTs.
       return constructorFunctions;
     }
 
-    // For function types and generic types, we just erase them
-    if (typeExpr.functionType() || typeExpr.genericTypeExpr()) {
-      return `${this.indent()}/* Type Erasure: ${typeName} */`;
+    // --- If no constructors found, proceed with Type Erasure ---
+    console.log(`[visitTypeDefinition] No constructors found for '${typeName}'. Performing type erasure.`);
+    // Erase function types, generic type aliases (that aren't ADTs), and simple aliases
+    // Use the original typeExpr reference to check the structure for erasure purposes
+    if (typeExpr.functionType() || typeExpr.genericTypeExpr() || typeExpr.recordType() || typeExpr.tupleType() || typeExpr.primitiveType() || typeExpr.IDENTIFIER()) {
+       return `${this.indent()}/* Type Erasure: ${typeName} */`;
     }
 
-    return `${this.indent()}/* Type Erasure: ${typeName} */`; // Placeholder for other types
+    // Fallback erasure (should ideally not be reached if grammar/logic is complete)
+    console.warn(`[visitTypeDefinition] Unhandled type structure for erasure: ${typeExpr.getText()}`);
+    return `${this.indent()}/* Type Erasure (Fallback): ${typeName} */`;
   }
 
   visitImportStmt(ctx: parser.ImportStmtContext): string {
@@ -216,10 +251,12 @@ export class ChicoryParserVisitor {
       : "";
   }
 
-  visitExpr(ctx: parser.ExprContext): string {
+  // Add expectedType parameter
+  visitExpr(ctx: parser.ExprContext, expectedType?: ChicoryType): string {
     // Get the type of the primary expression from the map
     const primaryExprCtx = ctx.primaryExpr();
-    let currentJs = this.visitPrimaryExpr(primaryExprCtx);
+    // Pass expectedType down to primary expression visitor
+    let currentJs = this.visitPrimaryExpr(primaryExprCtx, expectedType);
     let currentType = this.expressionTypes.get(primaryExprCtx); // Get type of primary
 
     // Iterate through tail expressions, compiling them sequentially
@@ -348,10 +385,15 @@ export class ChicoryParserVisitor {
     return ` ${ctx.OPERATOR().getText()} ${this.visitExpr(ctx.expr())}`;
   }
 
-  visitPrimaryExpr(ctx: parser.PrimaryExprContext): string {
+  // Add expectedType parameter
+  visitPrimaryExpr(
+    ctx: parser.PrimaryExprContext,
+    expectedType?: ChicoryType
+  ): string {
     const child = ctx.getChild(0);
     if (ctx instanceof parser.ParenExpressionContext) {
-      return `(${this.visitExpr(ctx.expr())})`;
+      // Pass expectedType through parentheses
+      return `(${this.visitExpr(ctx.expr(), expectedType)})`;
     } else if (child instanceof parser.IfExprContext) {
       return this.visitIfElseExpr(child);
     } else if (child instanceof parser.FuncExprContext) {
@@ -363,7 +405,8 @@ export class ChicoryParserVisitor {
     } else if (child instanceof parser.BlockExprContext) {
       return this.visitBlockExpr(child);
     } else if (child instanceof parser.RecordExprContext) {
-      return this.visitRecordExpr(child);
+      // Pass expectedType to record expression visitor
+      return this.visitRecordExpr(child, expectedType);
     } else if (child instanceof parser.ArrayLikeExprContext) {
       return this.visitArrayLikeExpr(child);
     } else if (ctx.ruleContext instanceof parser.IdentifierExpressionContext) {
@@ -540,9 +583,55 @@ export class ChicoryParserVisitor {
     return `{\n${block.join("\n")}\n${this.indent()}}`;
   }
 
-  visitRecordExpr(ctx: parser.RecordExprContext): string {
-    const kvs = ctx.recordKvExpr().map((kv) => this.visitRecordKvExpr(kv));
-    return `{ ${kvs.join(", ")} }`;
+  // Add expectedType parameter
+  visitRecordExpr(
+    ctx: parser.RecordExprContext,
+    expectedType?: ChicoryType
+  ): string {
+    const providedKeys = new Set<string>();
+    const compiledKvs: string[] = [];
+
+    // Compile provided key-value pairs
+    ctx.recordKvExpr().forEach((kv) => {
+      const key = kv.IDENTIFIER().getText();
+      providedKeys.add(key);
+      compiledKvs.push(this.visitRecordKvExpr(kv));
+    });
+
+    // --- Modified Optional Field Handling ---
+    // Resolve the expectedType (which might be a GenericType alias like Box<number>)
+    // to its underlying RecordType definition.
+    const resolvedRecordType = expectedType
+      ? this.typeChecker.resolveToRecordType(expectedType)
+      : null;
+
+    if (resolvedRecordType) {
+      console.log(`[visitRecordExpr] Resolved expected type to RecordType: ${resolvedRecordType.toString()}`);
+      for (const [expectedKey, expectedFieldType] of resolvedRecordType.fields) {
+        if (!providedKeys.has(expectedKey)) {
+          console.log(`  > Field '${expectedKey}' is missing in literal.`);
+          // Field is missing in the literal
+          // Check if the expected type is Option<...>
+          if (
+            // Check if the expected type (from the resolved record def) is Option<...>
+            expectedFieldType instanceof GenericType &&
+            expectedFieldType.name === "Option"
+          ) {
+            console.log(`    > Field '${expectedKey}' is optional (Option). Adding None().`);
+            // It's an optional field, add None()
+            compiledKvs.push(`${expectedKey}: None()`);
+            // Ensure prelude includes Option if not already triggered
+            this.typeChecker.prelude.requireOptionType();
+          } else {
+            console.log(`    > Field '${expectedKey}' is missing but not optional. Type checker should have caught this.`);
+            // If it's missing and *not* optional, the type checker should have errored.
+            // The compiler doesn't need to add anything here in that case.
+          }
+        }
+      }
+    }
+
+    return `{ ${compiledKvs.join(", ")} }`;
   }
 
   visitRecordKvExpr(ctx: parser.RecordKvExprContext): string {
@@ -662,13 +751,15 @@ export class ChicoryParserVisitor {
 
     const { errors, hints, expressionTypes, prelude } =
       this.typeChecker.check(
-        ctx, 
+        ctx,
         this.filename,
         (fp) => readFileSync(fp, "utf-8"),
-        new Map(),
+        new Map(), // Use actual cache/processing set if integrating properly
         new Set()
-    );
+      );
     this.expressionTypes = expressionTypes;
+    // Store the prelude instance returned by the checker
+    this.typeChecker.prelude = prelude; // Ensure the visitor uses the final prelude state
 
     const typeErrors = errors.map((err) => ({
       message: `Type Error: ${err.message}`,
@@ -679,9 +770,14 @@ export class ChicoryParserVisitor {
     this.hints = hints;
 
     const compiledUserCode = this.visitProgram(ctx);
+    console.log(`[getOutput] Compiled User Code:\n---\n${compiledUserCode}\n---`); // LOGGING
 
-    // Use the prelude instance from the visitor (which was set from the type checker)
-    const finalCode = (prelude.getPrelude() + "\n" + compiledUserCode).trim();
+    // Use the prelude instance stored in the visitor's typeChecker instance
+    const preludeCode = this.typeChecker.prelude.getPrelude(); // LOGGING
+    console.log(`[getOutput] Prelude Code:\n---\n${preludeCode}\n---`); // LOGGING
+
+    const finalCode = (preludeCode + "\n" + compiledUserCode).trim();
+    console.log(`[getOutput] Final Code:\n---\n${finalCode}\n---`); // LOGGING
 
     return {
       code: finalCode,

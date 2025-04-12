@@ -48,4 +48,4 @@ type CompilationCache = Map<string, CompilationCacheEntry>; // Key: absolute fil
 
 type ProcessingFiles = Set<string>; // Key: absolute file path
 
-type SubstitutionMap = Map<string, ChicoryType>;
+type SubstitutionMap = Map<number, ChicoryType>;

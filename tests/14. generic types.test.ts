@@ -14,7 +14,7 @@ test('Generic function types', () => {
     const code = `
 type Identity<T> = (T) => T
 type Mapper<A, B> = (A) => B
-type StateUpdater<T> = (T) => unit
+type StateUpdater<T> = (T) => void
 `;
     const result = compile(code);
     expect(result.errors).toHaveLength(0);
@@ -41,7 +41,7 @@ type Reducer<S, A> = (S, A) => S
 
 test('React-like useState type', () => {
     const code = `
-type State<T> = [T, (T) => unit]
+type State<T> = [T, (T) => void]
 type UseState<T> = (T) => State<T>
 `;
     const result = compile(code);

@@ -19,9 +19,9 @@ type NamedParamFunc = (x: number, y: string) => boolean
     expect(result.errors).toHaveLength(0);
 });
 
-test('Function type with unit return type', () => {
+test('Function type with void (unit) return type', () => {
     const code = `
-type VoidFunc = (number) => unit
+type VoidFunc = (number) => void
 `;
     const result = compile(code);
     expect(result.errors).toHaveLength(0);

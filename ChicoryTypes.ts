@@ -30,7 +30,7 @@ export class UnitTypeClass implements ChicoryType {
   static instance = new UnitTypeClass();
   private constructor() {}
   toString() {
-    return "unit";
+    return "void";
   }
 }
 
@@ -94,28 +94,34 @@ export class ArrayType implements ChicoryType {
 
 // ADT Type
 export class AdtType implements ChicoryType {
-  constructor(public name: string) {}
+  constructor(
+    public name: string,
+    public typeParameters: ChicoryType[] = []
+  ) {}
   toString() {
-    return this.name;
+    if (this.typeParameters.length === 0) {
+      return this.name;
+    }
+    return `${this.name}<${this.typeParameters.map(t => t.toString()).join(", ")}>`;
   }
 }
 
 // Generic Type (Simplified for now)
 export class GenericType implements ChicoryType {
-  constructor(public name: string, public typeArguments: ChicoryType[]) {}
+  constructor(public id: number, public name: string, public typeArguments: ChicoryType[]) {}
 
   toString() {
     if (this.typeArguments.length === 0) {
       return this.name;
     }
     const args = this.typeArguments.map((t) => t.toString()).join(", ");
-    return `${this.name}(...${args})`;
+    return `${this.name}<${args}>`;
   }
 }
 
 // Type Variable (For future use with type inference)
 export class TypeVariable implements ChicoryType {
-  constructor(public name: string) {}
+  constructor(public id: number, public name: string) {}
   toString() {
     return this.name;
   }

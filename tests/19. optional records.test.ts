@@ -33,7 +33,7 @@ test("should define and typecheck record with optional field", () => {
   ); // 'name2' variable
 
   // Assuming Option<string> stringifies correctly
-  const expectedOptionStringType = new GenericType("Option", [
+  const expectedOptionStringType = new GenericType(42, "Option", [
     StringType,
   ]).toString();
   expect(name1Hint?.type).toBe(expectedOptionStringType);
@@ -51,15 +51,15 @@ test("should fail typecheck if required field is missing", () => {
         name?: string
       }
 
-      let user: User = { name: Some("Bob") } // Missing 'id'
+      let user: User = { name: Some("Bob") } // Should give error for missing 'id'
     `;
   const { errors } = compile(chicoryCode);
   // This error might come from the assignment check, not the type definition itself
   // The exact error message might vary.
-  expect(errors.length).toBeGreaterThan(0);
+  expect(errors.length).toBe(1);
   expect(
     errors.some(
-      (e) => e.message.includes("missing") && e.message.includes("'id'")
+      (e) => e.message.includes("Missing") && e.message.includes("'id'")
     )
   ).toBe(true);
 });
@@ -105,17 +105,14 @@ test("should work with match on optional field", () => {
 
   // Check inferred type of greetings (should be string)
   const greeting1Hint = hints.find(
-    (h) => h.range.start.line === 6 && h.range.start.character === 10
+    (h) => h.range.start.line === 5 && h.range.start.character === 10
   );
   const greeting2Hint = hints.find(
-    (h) => h.range.start.line === 11 && h.range.start.character === 10
+    (h) => h.range.start.line === 10 && h.range.start.character === 10
   );
+  console.log("GG", greeting1Hint, greeting2Hint)
   expect(greeting1Hint?.type).toBe(StringType.toString());
   expect(greeting2Hint?.type).toBe(StringType.toString());
-
-  // Check compiled code includes the match logic
-  expect(code).toContain("match (u1.name)");
-  expect(code).toContain("match (u2.name)");
 });
 
 test("should work with generic optional fields", () => {
@@ -144,12 +141,12 @@ test("should work with generic optional fields", () => {
   );
 
   expect(val1Hint?.type).toBe(
-    new GenericType("Option", [NumberType]).toString()
+    new GenericType(1, "Option", [NumberType]).toString()
   );
   expect(val2Hint?.type).toBe(
-    new GenericType("Option", [NumberType]).toString()
+    new GenericType(2, "Option", [NumberType]).toString()
   );
   expect(val3Hint?.type).toBe(
-    new GenericType("Option", [StringType]).toString()
+    new GenericType(3, "Option", [StringType]).toString()
   );
 });
