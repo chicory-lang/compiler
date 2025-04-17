@@ -4,6 +4,7 @@ import * as parser from "./generated/ChicoryParser";
 import { ChicoryTypeChecker } from "./ChicoryTypeCheckerVisitor";
 import { CompilationError, TypeHintWithContext, ChicoryType } from "./env";
 import {
+  AdtType,
   ArrayType,
   FunctionType,
   GenericType,
@@ -252,12 +253,24 @@ export class ChicoryParserVisitor {
   }
 
   // Add expectedType parameter
-  visitExpr(ctx: parser.ExprContext, expectedType?: ChicoryType): string {
+  visitExpr(ctx: parser.ExprContext, expectedType?: ChicoryType): string { // Added expectedType
     // Get the type of the primary expression from the map
     const primaryExprCtx = ctx.primaryExpr();
     // Pass expectedType down to primary expression visitor
     let currentJs = this.visitPrimaryExpr(primaryExprCtx, expectedType);
-    let currentType = this.expressionTypes.get(primaryExprCtx); // Get type of primary
+
+    // --- Get Type of Base Expression ---
+    // Use the specific context node that the type checker used as the key.
+    // For identifiers, it's the IdentifierExpressionContext itself.
+    // For other primary expressions (literals, records, etc.), it's the PrimaryExprContext.
+    let typeLookupCtx: ParserRuleContext = primaryExprCtx;
+    if (primaryExprCtx instanceof parser.IdentifierExpressionContext) {
+        typeLookupCtx = primaryExprCtx; // Use the specific context for identifiers
+    }
+    // Add 'else if' for other specific contexts if needed (e.g., LiteralExpressionContext)
+    let currentType = this.expressionTypes.get(typeLookupCtx); // Use the determined context for lookup
+    // --- End Get Type ---
+
 
     // Iterate through tail expressions, compiling them sequentially
     for (const tailExprCtx of ctx.tailExpr()) {
@@ -268,7 +281,7 @@ export class ChicoryParserVisitor {
       if (!currentType) {
         // This might happen if type checking failed for this part.
         // Log or handle? For now, continue, JS might still be valid.
-        // console.warn(`No type found for tail expression: ${tailExprCtx.getText()}`);
+        console.warn(`No type found for tail expression: ${tailExprCtx.getText()}`);
       }
     }
     return currentJs; // Return the final compiled JS string
@@ -311,14 +324,21 @@ export class ChicoryParserVisitor {
       }
     } else if (ctx.ruleContext instanceof parser.CallExpressionContext) {
       const callCtx = (ctx as parser.CallExpressionContext).callExpr();
+      // Determine expected parameter types directly from the FunctionType
+      const expectedParamTypes = (baseType instanceof FunctionType) ? baseType.paramTypes : [];
+
       const args = callCtx.expr()
         ? callCtx
             .expr()
-            .map((expr) => this.visitExpr(expr))
+            .map((expr, index) => {
+                const expectedArgType = expectedParamTypes[index]; // Get expected type for this arg
+                // Pass expected type down to the argument expression visitor
+                return this.visitExpr(expr, expectedArgType);
+            })
             .join(", ")
         : "";
 
-      // ---> START REPLACEMENT <---
+      // ---> START REPLACEMENT <--- // Note: This section handles Option wrapping for specific array methods
 
       // Get the type inferred by the type checker for the *result* of this specific call expression node
       const resultType = this.expressionTypes.get(ctx); // ctx is the TailExprContext wrapping CallExpressionContext
@@ -388,14 +408,14 @@ export class ChicoryParserVisitor {
   // Add expectedType parameter
   visitPrimaryExpr(
     ctx: parser.PrimaryExprContext,
-    expectedType?: ChicoryType
+    expectedType?: ChicoryType // Added expectedType
   ): string {
     const child = ctx.getChild(0);
     if (ctx instanceof parser.ParenExpressionContext) {
       // Pass expectedType through parentheses
-      return `(${this.visitExpr(ctx.expr(), expectedType)})`;
+      return `(${this.visitExpr(ctx.expr(), expectedType)})`; // Pass expectedType
     } else if (child instanceof parser.IfExprContext) {
-      return this.visitIfElseExpr(child);
+      return this.visitIfElseExpr(child); // If doesn't directly use expectedType here
     } else if (child instanceof parser.FuncExprContext) {
       return this.visitFuncExpr(child);
     } else if (child instanceof parser.JsxExprContext) {
@@ -406,11 +426,11 @@ export class ChicoryParserVisitor {
       return this.visitBlockExpr(child);
     } else if (child instanceof parser.RecordExprContext) {
       // Pass expectedType to record expression visitor
-      return this.visitRecordExpr(child, expectedType);
+      return this.visitRecordExpr(child, expectedType); // Pass expectedType
     } else if (child instanceof parser.ArrayLikeExprContext) {
-      return this.visitArrayLikeExpr(child);
+      return this.visitArrayLikeExpr(child); // Array doesn't use expectedType directly here
     } else if (ctx.ruleContext instanceof parser.IdentifierExpressionContext) {
-      return this.visitIdentifier(ctx);
+      return this.visitIdentifier(ctx); // Identifier doesn't use expectedType directly here
     } else if (child instanceof parser.LiteralContext) {
       return this.visitLiteral(child);
     }
@@ -629,7 +649,13 @@ export class ChicoryParserVisitor {
           }
         }
       }
+    } else if (resolvedRecordType) {
+        console.log(`[visitRecordExpr] Expected type is not a RecordType after resolution: ${expectedType?.toString()}`);
+    } else {
+        console.log(`[visitRecordExpr] No expected type provided or could not resolve to RecordType.`);
     }
+    // --- End Modified Optional Field Handling ---
+
 
     return `{ ${compiledKvs.join(", ")} }`;
   }

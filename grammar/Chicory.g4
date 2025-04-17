@@ -52,7 +52,7 @@ adtTypeAnnotation: IDENTIFIER ':' (primitiveType | IDENTIFIER);
 
 recordType: '{' NL* recordTypeAnnotation (',' NL* recordTypeAnnotation)* ','? NL* '}';
 
-recordTypeAnnotation: IDENTIFIER QUESTION? ':' (primitiveType | recordType | IDENTIFIER | tupleType | functionType);
+recordTypeAnnotation: IDENTIFIER QUESTION? ':' (primitiveType | recordType | IDENTIFIER | tupleType | functionType | genericTypeExpr);
 
 tupleType: '[' NL* typeExpr (',' NL* typeExpr)* ','? NL* ']';
 

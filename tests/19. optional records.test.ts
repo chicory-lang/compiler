@@ -150,3 +150,46 @@ test("should work with generic optional fields", () => {
     new GenericType(3, "Option", [StringType]).toString()
   );
 });
+
+test("should add None() for missing optional field in ADT constructor arg", () => {
+  const chicoryCode = `
+type UserProfile = {
+  name?: string,
+  age: number
+}
+
+type User =
+  | LoggedIn(UserProfile)
+  | Guest
+
+// 'name' is omitted, compiler should add 'name: None()'
+let u: User = LoggedIn({ age: 30 })
+
+let nameIsNone = match (u) {
+  LoggedIn(p) => match (p.name) {
+    Some(_) => false
+    None => true
+  }
+  Guest => false // Should not happen
+}
+  `.trim();
+  const { code, errors } = compile(chicoryCode);
+
+  // Check for type errors
+  expect(errors).toHaveLength(0);
+
+  // Check compiled code for the LoggedIn call
+  // It should look like: const u = LoggedIn({ age: 30, name: None() });
+  expect(code).toContain("LoggedIn({ age: 30, name: None() })");
+});
+
+test("Options fields can be explicitly set to None", () => {
+  const { errors } = compile(`type User = {
+  id: number,
+  name?: string
+}
+
+const u: User = { id: 1, name: None }
+`);
+  expect(errors.length).toBe(0)
+});

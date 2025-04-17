@@ -854,43 +854,70 @@ export class ChicoryTypeChecker {
 
   // Helper to resolve a type (potentially a generic alias) to its underlying RecordType
   resolveToRecordType(type: ChicoryType): RecordType | null {
-      // Apply current substitutions first to resolve any bound type variables
-      const substitutedType = this.applySubstitution(type, this.currentSubstitution, new Set());
-      console.log(`[resolveToRecordType] Resolving type: ${type.toString()} -> Substituted: ${substitutedType.toString()}`);
+      // The type passed in should already be substituted by the calling context (checker or compiler).
+      // We only need to handle alias expansion here.
+      console.log(`[resolveToRecordType] Resolving type: ${type?.toString()}`); // Added null check for logging
 
-      if (substitutedType instanceof RecordType) {
+      if (!type) return null; // Handle null input gracefully
+
+      if (type instanceof RecordType) {
           console.log(`  > Is already RecordType.`);
-          return substitutedType;
+          return type;
       }
 
-      if (substitutedType instanceof GenericType && this.typeAliasDefinitions.has(substitutedType.name)) {
-          console.log(`  > Is GenericType alias: ${substitutedType.name}`);
-          const aliasInfo = this.typeAliasDefinitions.get(substitutedType.name)!;
+      // --- Non-Generic Alias Expansion ---
+      // Check if 'type' is an AdtType or GenericType with 0 args that matches a non-generic alias definition
+      // Use type.name which exists on AdtType and GenericType
+      if ((type instanceof AdtType || (type instanceof GenericType && type.typeArguments.length === 0)) && this.typeAliasDefinitions.has(type.name)) {
+          const aliasInfo = this.typeAliasDefinitions.get(type.name)!;
+          // Ensure it's a non-generic alias (no params defined)
+          if (aliasInfo.params.length === 0) {
+              console.log(`  > Is non-generic alias: ${type.name}. Expanding.`);
+              const aliasDef = aliasInfo.definition;
+              console.log(`    > Alias definition: ${aliasDef.toString()}`);
+              // Recursively resolve the definition in case it points to another alias
+              return this.resolveToRecordType(aliasDef);
+          } else {
+              console.log(`  > Alias ${type.name} is generic, but used without type arguments here. Cannot resolve to RecordType without arguments.`);
+              // This case might indicate an error elsewhere if a generic alias was expected to be instantiated.
+              return null;
+          }
+      }
+      // --- End Non-Generic Alias Expansion ---
+
+
+      // --- Generic Alias Expansion ---
+      if (type instanceof GenericType && this.typeAliasDefinitions.has(type.name)) {
+          console.log(`  > Is GenericType alias: ${type.name}`);
+          const aliasInfo = this.typeAliasDefinitions.get(type.name)!;
           const aliasDef = aliasInfo.definition;
           console.log(`    > Alias definition: ${aliasDef.toString()}`);
 
-          // Create substitution map from alias params (T) to provided generic args (number/string)
-          const aliasSubstitution = new Map<number, ChicoryType>();
-          if (aliasInfo.params.length === substitutedType.typeArguments.length) {
-              aliasInfo.params.forEach((param, index) => {
-                  // Apply outer substitution to the argument *before* using it in the alias substitution
-                  const substitutedArg = this.applySubstitution(substitutedType.typeArguments[index], this.currentSubstitution, new Set());
-                  console.log(`      > Mapping alias param ${param.name} to substituted arg ${substitutedArg.toString()}`);
-                  aliasSubstitution.set(param.id, substitutedArg);
-              });
-          } else {
-              // Arity mismatch, cannot properly substitute
-              console.warn(`[resolveToRecordType] Arity mismatch for alias ${substitutedType.name}. Expected ${aliasInfo.params.length}, got ${substitutedType.typeArguments.length}`);
+          // Check for arity mismatch
+          if (aliasInfo.params.length !== type.typeArguments.length) {
+              console.warn(`[resolveToRecordType] Arity mismatch for generic alias ${type.name}. Expected ${aliasInfo.params.length}, got ${type.typeArguments.length}`);
               return null;
           }
 
+          // Create substitution map from alias params (T) to provided generic args (e.g., number/string)
+          const aliasSubstitution = new Map<number, ChicoryType>();
+          aliasInfo.params.forEach((param, index) => {
+              // The type arguments provided in 'type' (e.g., number in Box<number>) are already substituted by the outer context.
+              const instanceArg = type.typeArguments[index];
+              console.log(`      > Mapping alias param ${param.name}(id=${param.id}) to instance arg ${instanceArg.toString()}`);
+              aliasSubstitution.set(param.id, instanceArg);
+          });
+
           // Apply the alias-specific substitution to the alias definition's type
+          // Use an empty visited set for this self-contained substitution application.
           const substitutedAliasDef = this.applySubstitution(aliasDef, aliasSubstitution, new Set());
           console.log(`    > Substituted alias definition: ${substitutedAliasDef.toString()}`);
 
           // Recursively resolve the substituted definition in case the alias points to another alias
           return this.resolveToRecordType(substitutedAliasDef);
       }
+      // --- End Generic Alias Expansion ---
+
 
       console.log(`  > Type is not RecordType or known RecordType alias.`);
       return null; // Not a record type or a known record alias
@@ -1727,9 +1754,11 @@ export class ChicoryTypeChecker {
       } else if (kv.functionType()) {
         // visitFunctionType creates its own scope/map, doesn't need the outer one passed
         val = this.visitFunctionType(kv.functionType()!);
-      } else if (kv.IDENTIFIER()?.length > 1) {
+      } else if (kv.genericTypeExpr()) { // <<< ADDED: Handle GenericTypeExpr like Option<string>
+        val = this.visitGenericTypeExpr(kv.genericTypeExpr()!, typeVarsInSig); // Pass map
+      } else if (kv.IDENTIFIER()?.length > 1) { // Handles simple Identifier like 'User' or 'T'
         // Ensure it's the type identifier case
-        const rhs = kv.IDENTIFIER()[1].getText();
+        const rhs = kv.IDENTIFIER()[1].getText(); // This assumes the second IDENTIFIER is the type
         // Check signature vars first, then environment, then fallback
         val =
           typeVarsInSig?.get(rhs) ||
@@ -2745,9 +2774,42 @@ export class ChicoryTypeChecker {
       );
       console.log(`  > Substituted env type: ${substitutedType.toString()}`);
 
+      // --- Check if it's a Nullary Constructor VALUE (Moved UP) ---
+      const nullaryConstructor = this.constructors.find(c =>
+          c.name === identifierName &&
+          c.type instanceof FunctionType &&
+          c.type.paramTypes.length === 0
+      );
+
+      if (nullaryConstructor) {
+          console.log(`  > Identifier '${identifierName}' is a nullary constructor used as value.`);
+          const returnType = (nullaryConstructor.type as FunctionType).returnType;
+          console.log(`    > Nullary constructor return type (pre-instantiation): ${returnType.toString()}`);
+          let finalReturnType = returnType;
+          // Instantiate if the return type is generic (e.g., Option<T>)
+          if (returnType instanceof GenericType && returnType.typeArguments.some(arg => arg instanceof TypeVariable || (arg instanceof GenericType && arg.typeArguments.length === 0))) {
+              console.log(`    > Return type is generic and needs instantiation.`);
+              finalReturnType = this.instantiateGenericType(returnType);
+              console.log(`    > Instantiated nullary generic constructor return type ${identifierName}: ${returnType} -> ${finalReturnType}`);
+          } else {
+              console.log(`    > Return type is not generic or doesn't need instantiation.`);
+          }
+          // Store and return the INSTANCE type
+          console.log(`[visitIdentifier] Setting type for Nullary Constructor Value '${identifierName}' (Ctx: ${ctx.start?.start}-${ctx.stop?.stop}): ${finalReturnType.toString()}`); // LOGGING ADDED
+          this.setExpressionType(ctx, finalReturnType);
+          this.hints.push({ context: ctx, type: finalReturnType.toString() });
+          console.log(`[visitIdentifier] EXIT: Returning nullary constructor instance type: ${finalReturnType.toString()}`);
+          return finalReturnType;
+      }
+      // --- End Nullary Constructor Check (Moved UP) ---
+
+      // If it wasn't handled as a nullary constructor value, proceed with regular env type handling:
       // If it's a function type from the env that might be generic, instantiate it.
-      // (Keep existing logic for this part, ensure it handles generic functions correctly)
-      if (substitutedType instanceof FunctionType) {
+      else if (substitutedType instanceof FunctionType) { // <<< Added 'else' here
+        // <<< ADDED: Store the resolved type in the map for the compiler >>>
+        console.log(`[visitIdentifier] Setting type for Env Function '${identifierName}' (Ctx: ${ctx.start?.start}-${ctx.stop?.stop}): ${substitutedType.toString()}`); // LOGGING ADDED
+        this.setExpressionType(ctx, substitutedType);
+        // <<< END ADDED >>>
         console.log(
           `  > Substituted type is FunctionType. Checking if instantiation needed.`
         );
@@ -2924,6 +2986,10 @@ export class ChicoryTypeChecker {
             );
           }
 
+          // Store the resolved type in the map for the compiler
+          console.log(`[visitIdentifier] Setting type for Non-Nullary Constructor Function '${identifierName}' (Ctx: ${ctx.start?.start}-${ctx.stop?.stop}): ${typeToReturn.toString()}`); // LOGGING ADDED
+          this.setExpressionType(ctx, typeToReturn);
+
           this.hints.push({ context: ctx, type: typeToReturn.toString() });
           console.log(
             `[visitIdentifier] EXIT: Returning non-nullary constructor function type: ${typeToReturn.toString()}`
@@ -2970,9 +3036,10 @@ export class ChicoryTypeChecker {
       fields.set(key, valueType);
     });
 
-    // Add a hint for debugging
     const recordType = new RecordType(fields);
-    this.hints.push({ context: ctx, type: recordType.toString() });
+    // Do NOT add hint here; it will be added by the calling context (e.g., visitCallExpr)
+    // after potential unification which might refine the type.
+    // this.hints.push({ context: ctx, type: recordType.toString() });
 
     return recordType;
   }
@@ -3310,17 +3377,15 @@ export class ChicoryTypeChecker {
           errorMsg,
           ctx.expr(i)! // Report error on the specific argument
         );
-        // Continue checking other args even if one fails, to report all mismatches
-      } else {
-        console.log(
-          `    > Unification ${
-            i + 1
-          } successful. Resulting type: ${result.toString()}`
-        );
         console.log(
           `    > callSubstitution (after arg ${i + 1}):`,
           new Map(callSubstitution)
         );
+        // Store the unified type for the argument expression itself.
+        // This ensures hints and the compiler see the type expected by the function param.
+        this.setExpressionType(ctx.expr(i)!, result);
+        // Add the hint for the argument expression *after* successful unification.
+        this.hints.push({ context: ctx.expr(i)!, type: result.toString() });
       }
     }
 
