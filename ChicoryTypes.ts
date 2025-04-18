@@ -247,3 +247,7 @@ export const NumberType = NumberTypeClass.instance;
 export const BooleanType = BooleanTypeClass.instance;
 export const UnitType = UnitTypeClass.instance;
 export const UnknownType = UnknownTypeClass.instance;
+
+// --- Specific ADT for CSS Display Property ---
+export const DisplayTypeAdt = new AdtType("DisplayType");
+// --- End DisplayType ADT ---

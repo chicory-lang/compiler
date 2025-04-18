@@ -18,13 +18,9 @@ import {
   GenericType,
   TypeVariable,
   ArrayType,
-  StringTypeClass,
-  NumberTypeClass,
-  BooleanTypeClass,
-  UnitTypeClass,
-  UnknownTypeClass,
   RecordField,
   JsxElementType,
+  DisplayTypeAdt,
 } from "./ChicoryTypes";
 import { TypeEnvironment } from "./TypeEnvironment";
 import {
@@ -190,19 +186,51 @@ export class ChicoryTypeChecker {
 
     // Add constructor definitions for the type checker's ADT logic
     this.constructors.push(okConstructorDef, errConstructorDef);
+
+    // --- DisplayType ADT ---
+    const displayTypeName = "DisplayType";
+    const displayTypeAdt = DisplayTypeAdt; // Use the exported instance
+    this.environment.declare(displayTypeName, displayTypeAdt, null, (err) => console.error("Prelude Error (DisplayType):", err));
+
+    const displayConstructors = ["Block", "Inline", "Flex", "Grid", "None"];
+    displayConstructors.forEach(name => {
+        const constructorType = new FunctionType([], displayTypeAdt, name); // Nullary constructor
+        const constructorDef: ConstructorDefinition = { adtName: displayTypeName, name: name, type: constructorType };
+        this.environment.declare(name, constructorType, null, (err) => console.error(`Prelude Error (${name}):`, err));
+        this.constructors.push(constructorDef);
+    });
+    // --- End DisplayType ADT ---
+
   }
 
   // --- START: JSX Intrinsic Initialization ---
   private initializeJsxIntrinsics(): void {
       console.log("[initializeJsxIntrinsics] Initializing...");
+
+      // --- Define Style Record Type ---
+      // Define a basic type for the 'style' object. Properties are optional strings/numbers.
+      const styleRecordType = new RecordType(new Map<string, RecordField>([
+          // Add common CSS properties here. All should be optional.
+          ['color',        { type: StringType, optional: true }], // color?: string
+          ['backgroundColor', { type: StringType, optional: true }], // backgroundColor?: string
+          ['fontSize',     { type: StringType, optional: true }], // fontSize?: string (e.g., "16px", "1.2em") - could also allow number
+          ['margin',       { type: StringType, optional: true }], // margin?: string
+          ['padding',      { type: StringType, optional: true }], // padding?: string
+          ['width',        { type: StringType, optional: true }], // width?: string
+          ['height',       { type: StringType, optional: true }], // height?: string
+          ['display',      { type: DisplayTypeAdt, optional: true }], // display?: DisplayType
+          // ... add more as needed
+      ]));
+      console.log(`[initializeJsxIntrinsics] styleRecordType defined: ${styleRecordType.toString()}`);
+      // --- End Style Record Type ---
+
       // Define common HTML attributes as a RecordType
       // Using '?' for optional attributes (Rescript style)
       const commonHtmlAttributes = new RecordType(new Map<string, RecordField>([
           ['class', { type: StringType, optional: true }], // class?: string
           ['id',    { type: StringType, optional: true }], // id?: string
-          // Add other common attributes like style?, title?, etc. as needed
-          // Example with Option<T> if needed for specific cases (less common with Rescript style):
-          // ['data-custom', { type: new GenericType(this.nextTypeVarId++, 'Option', [StringType]), optional: false }], // data-custom: Option<string> (required Option)
+          ['style', { type: styleRecordType, optional: true }], // style?: { color?: string, ... }
+          // Add other common attributes like title?, etc. as needed
       ]));
       console.log(`[initializeJsxIntrinsics] commonHtmlAttributes defined: ${commonHtmlAttributes.toString()}`);
 
@@ -4821,22 +4849,134 @@ export class ChicoryTypeChecker {
             providedValueType = UnknownType;
           }
            console.log(`    > Provided value type for '${attrName}': ${providedValueType.toString()}`);
+
+           // --- Special Check for style.display String Literals ---
+           // This is a HACK/SIMPLIFICATION because we don't easily have the expected type here.
+           // A better approach would involve passing expected types down more rigorously.
+           if (attrName === 'style' && valueCtx.expr()) {
+               // If the attribute is 'style' and the value is an expression '{...}'
+               // We need to look inside the expression to see if it's a record literal
+               // and check the 'display' field specifically. This is getting complex here.
+               // Let's defer this proper check. The current logic will attempt to unify
+               // the inferred record type with the expected styleRecordType later.
+               console.warn(`[visitAndCheckJsxAttributes] TODO: Implement deep check for style={{ display: "literal" }}`);
+           } else if (attrName === 'display' && valueCtx.STRING()) {
+               // This case handles <div display="block" /> which isn't standard JSX style prop.
+               // If we intended to support this, we'd check the literal here.
+               // const literalValue = valueCtx.STRING()!.getText().slice(1, -1); // Remove quotes
+               // const allowedDisplayValues = ["block", "inline", "flex", "grid", "none"];
+               // if (expectedInnerType === DisplayTypeAdt && allowedDisplayValues.includes(literalValue)) {
+               //     console.log(`    > Allowing string literal "${literalValue}" for 'display' attribute.`);
+               //     // We can perhaps coerce providedValueType here, but it feels wrong.
+               //     // Let unification handle it for now, expecting it to fail correctly without more changes.
+               // }
+           }
+           // --- End Special Check ---
         }
 
-        // Unify the provided type with the *expected inner type*
-        // Pass empty visited set
+        // Apply substitution to the provided value type
         const substitutedValueType = this.applySubstitution(providedValueType, this.currentSubstitution, new Set());
-        const unificationResult = this.unify(
-          expectedInnerType, // T
-          substitutedValueType, // Type of the value provided
-          this.currentSubstitution // Use main substitution map
-        );
 
-        if (unificationResult instanceof Error) {
-          // Pass empty visited set
+        // --- Custom Check for Record Attributes (like style) ---
+        let attributeCheckError: Error | null = null;
+        if (expectedInnerType instanceof RecordType && substitutedValueType instanceof RecordType) {
+            console.log(`    > Performing custom record check for attribute '${attrName}'.`);
+            const expectedFields = expectedInnerType.fields;
+            const providedFields = substitutedValueType.fields;
+            const providedKeys = new Set(providedFields.keys());
+
+            // 1. Check provided fields against expected
+            for (const [key, providedField] of providedFields) {
+                const expectedField = expectedFields.get(key);
+                if (!expectedField) {
+                    attributeCheckError = new Error(`Provided object for attribute '${attrName}' has unexpected field '${key}'.`);
+                    break;
+                }
+                // Check optional compatibility (allow provided non-optional for expected optional)
+                if (!expectedField.optional && providedField.optional) {
+                    attributeCheckError = new Error(`Internal Error? Cannot assign optional field '${key}' to required field '${key}' in expected props for '${attrName}'.`);
+                    break;
+                }
+
+                // --- Get the original AST node for the provided value ---
+                // This assumes the structure of the record literal AST
+                let providedValueNode: parser.ExprContext | null = null;
+                if (substitutedValueType instanceof RecordType && valueCtx?.expr()?.primaryExpr() instanceof parser.RecordExpressionContext) {
+                    const recordExprCtx = valueCtx.expr()!.primaryExpr() as parser.RecordExpressionContext;
+                    const kvPair = recordExprCtx.recordExpr().recordKvExpr().find(kv => kv.IDENTIFIER().getText() === key);
+                    providedValueNode = kvPair?.expr() ?? null;
+                }
+                // --- End Get Value Node ---
+
+
+                // --- Special Case for display: string -> DisplayType ---
+                let fieldCheckResult: ChicoryType | Error | null = null; // Use null to indicate handled by special case
+
+                if (key === 'display' && expectedField.type === DisplayTypeAdt) {
+                    // Check if the provided value node is a string literal
+                    if (providedValueNode?.primaryExpr() instanceof parser.LiteralExpressionContext &&
+                        (providedValueNode.primaryExpr() as parser.LiteralExpressionContext).literal() instanceof parser.StringLiteralContext)
+                    {
+                        const literalCtx = (providedValueNode.primaryExpr() as parser.LiteralExpressionContext).literal();
+                        const literalValueWithQuotes = literalCtx.getText();
+                        const literalValue = literalValueWithQuotes.substring(1, literalValueWithQuotes.length - 1); // Remove quotes
+
+                        // Check against known DisplayType constructors
+                        const allowedDisplayValues = ["Block", "Inline", "Flex", "Grid", "None"]; // Match constructor names
+                        if (allowedDisplayValues.some(ctor => ctor.toLowerCase() === literalValue.toLowerCase())) {
+                            console.log(`[visitAndCheckJsxAttributes] Allowed string literal "${literalValue}" for 'display: DisplayTypeAdt' in attribute '${attrName}'.`);
+                            fieldCheckResult = null; // Mark as handled, skip default unification
+                        } else {
+                            attributeCheckError = new Error(`Invalid string value "${literalValue}" for 'display' property in attribute '${attrName}'. Expected one of: ${allowedDisplayValues.map(v => `"${v.toLowerCase()}"`).join(', ')} (or the corresponding ADT constructor).`);
+                            fieldCheckResult = attributeCheckError; // Store error to break loop
+                        }
+                    } else {
+                        // Provided value for display is not a direct string literal, use default unification
+                        console.log(`[visitAndCheckJsxAttributes] Value for 'display' in attribute '${attrName}' is not a string literal. Using default unification.`);
+                        fieldCheckResult = this.unify(expectedField.type, providedField.type, this.currentSubstitution);
+                    }
+                } else {
+                    // Default: Unify inner types for other fields
+                    fieldCheckResult = this.unify(expectedField.type, providedField.type, this.currentSubstitution);
+                }
+                // --- End Special Case ---
+
+                if (fieldCheckResult instanceof Error) {
+                    // Use the specific error from unification or the special case check
+                    attributeCheckError = new Error(`Type mismatch for field '${key}' in attribute '${attrName}'. Expected '${expectedField.type}' but got '${providedField.type}'. ${fieldCheckResult.message}`);
+                    break;
+                }
+            }
+
+            // 2. Check for missing required fields (if no error yet)
+            if (!attributeCheckError) {
+                for (const [key, expectedField] of expectedFields) {
+                    if (!providedKeys.has(key) && !expectedField.optional) {
+                        attributeCheckError = new Error(`Missing required field '${key}' in object provided for attribute '${attrName}'. Expected type: ${expectedInnerType}`);
+                        break;
+                    }
+                }
+            }
+             console.log(`    > Custom record check result: ${attributeCheckError ? `Error (${attributeCheckError.message})` : 'Success'}`);
+        } else {
+            // --- Default Unification for Non-Record Attributes ---
+            console.log(`    > Using default unification for attribute '${attrName}'.`);
+            const unificationResult = this.unify(
+                expectedInnerType,      // T (e.g., string for 'class')
+                substitutedValueType, // Type of the value provided (e.g., string)
+                this.currentSubstitution // Use main substitution map
+            );
+            if (unificationResult instanceof Error) {
+                attributeCheckError = unificationResult; // Store the error
+            }
+        }
+        // --- End Custom/Default Check ---
+
+        if (attributeCheckError) {
+          // Apply substitution to expectedInnerType for the error message
           const finalExpectedInner = this.applySubstitution(expectedInnerType, this.currentSubstitution, new Set());
           this.reportError(
-            `Type mismatch for attribute '${attrName}'. Expected type '${finalExpectedInner}' but got '${substitutedValueType}'. ${unificationResult.message}`,
+            `Type mismatch for attribute '${attrName}'. Expected type '${finalExpectedInner}' but got '${substitutedValueType}'. ${attributeCheckError.message}`,
             valueCtx ?? attrCtx // Report on value if present, else on attribute name
           );
         } else {
