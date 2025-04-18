@@ -133,6 +133,16 @@ export class TypeVariable implements ChicoryType {
   }
 }
 
+// JSX Element Type
+export class JsxElementType implements ChicoryType {
+  // Represents the result of a JSX expression, holding the type of its expected props.
+  constructor(public propsType: RecordType) {}
+  toString() {
+    // Indicate the props type it expects
+    return `JsxElement<${this.propsType.toString()}>`;
+  }
+}
+
 // Unknown Type (For errors or incomplete type information)
 export class UnknownTypeClass implements ChicoryType {
   static instance = new UnknownTypeClass();
@@ -223,6 +233,9 @@ export function typesAreEqual(type1: ChicoryType, type2: ChicoryType): boolean {
     return true;
   } else if (type1 instanceof TypeVariable && type2 instanceof TypeVariable) {
     return type1.name === type2.name;
+  } else if (type1 instanceof JsxElementType && type2 instanceof JsxElementType) {
+    // Two JsxElement types are equal if their expected props types are equal
+    return typesAreEqual(type1.propsType, type2.propsType);
   }
 
   return false;

@@ -24,6 +24,7 @@ import {
   UnitTypeClass,
   UnknownTypeClass,
   RecordField,
+  JsxElementType,
 } from "./ChicoryTypes";
 import { TypeEnvironment } from "./TypeEnvironment";
 import {
@@ -190,7 +191,46 @@ export class ChicoryTypeChecker {
     // Add constructor definitions for the type checker's ADT logic
     this.constructors.push(okConstructorDef, errConstructorDef);
   }
-  
+
+  // --- START: JSX Intrinsic Initialization ---
+  private initializeJsxIntrinsics(): void {
+      console.log("[initializeJsxIntrinsics] Initializing...");
+      // Define common HTML attributes as a RecordType
+      // Using '?' for optional attributes (Rescript style)
+      const commonHtmlAttributes = new RecordType(new Map<string, RecordField>([
+          ['class', { type: StringType, optional: true }], // class?: string
+          ['id',    { type: StringType, optional: true }], // id?: string
+          // Add other common attributes like style?, title?, etc. as needed
+          // Example with Option<T> if needed for specific cases (less common with Rescript style):
+          // ['data-custom', { type: new GenericType(this.nextTypeVarId++, 'Option', [StringType]), optional: false }], // data-custom: Option<string> (required Option)
+      ]));
+      console.log(`[initializeJsxIntrinsics] commonHtmlAttributes defined: ${commonHtmlAttributes.toString()}`);
+
+      // Declare intrinsic elements in the environment
+      // The "type" associated with the tag name is a JsxElementType containing the RecordType of its expected attributes.
+      const divType = new JsxElementType(commonHtmlAttributes);
+      console.log(`[initializeJsxIntrinsics] Declaring 'div' with type: ${divType.toString()}`);
+      this.environment.declare('div', divType, null, (err) => console.error("JSX Intrinsic Error (div):", err));
+
+      const spanType = new JsxElementType(commonHtmlAttributes);
+      console.log(`[initializeJsxIntrinsics] Declaring 'span' with type: ${spanType.toString()}`);
+      this.environment.declare('span', spanType, null, (err) => console.error("JSX Intrinsic Error (span):", err));
+
+      const pType = new JsxElementType(commonHtmlAttributes);
+      console.log(`[initializeJsxIntrinsics] Declaring 'p' with type: ${pType.toString()}`);
+      this.environment.declare('p', pType, null, (err) => console.error("JSX Intrinsic Error (p):", err));
+
+      const h1Type = new JsxElementType(commonHtmlAttributes);
+      console.log(`[initializeJsxIntrinsics] Declaring 'h1' with type: ${h1Type.toString()}`);
+      this.environment.declare('h1', h1Type, null, (err) => console.error("JSX Intrinsic Error (h1):", err));
+
+      // Ensure Option is required if explicitly used in attributes (like the data-custom example above)
+      // this.prelude.requireOptionType();
+      console.log("[initializeJsxIntrinsics] Initialization complete.");
+  }
+  // --- END: JSX Intrinsic Initialization ---
+
+
   private newTypeVar(name: string = `T${this.nextTypeVarId}`): TypeVariable {
     const id = this.nextTypeVarId++;
     return new TypeVariable(id, name);
@@ -640,6 +680,28 @@ export class ChicoryTypeChecker {
       return unifiedType;
     }
 
+    // --- JsxElementType Unification ---
+    if (type1 instanceof JsxElementType && type2 instanceof JsxElementType) {
+        console.log(`[unify] BRANCH: JsxElementType vs JsxElementType`);
+        // Unify their props types recursively
+        console.log(`  > Recursively unifying props types`);
+        const propsResult = this.unify(type1.propsType, type2.propsType, substitution);
+        if (propsResult instanceof Error) {
+            const error = new Error(`Cannot unify JsxElement types: ${propsResult.message}`);
+            console.error(`[unify] ERROR: ${error.message}`);
+            console.log(`[unify] EXIT (error)`);
+            return error;
+        }
+        // Return one of the JsxElement types (e.g., type1) as they are now considered equivalent
+        // No need to apply substitution again, as propsResult is the unified props type
+        const unifiedType = new JsxElementType(propsResult as RecordType); // Create new instance with unified props
+        console.log(`[unify] SUCCESS: Unified JsxElementType ${unifiedType}`);
+        console.log(`[unify] EXIT`);
+        return unifiedType;
+    }
+    // --- End JsxElementType Unification ---
+
+
     // Add other type-specific unification rules (RecordType etc.) as needed
     const finalError = new Error(`Cannot unify ${type1} with ${type2}`);
     console.error(`[unify] ERROR: Fallthrough - ${finalError.message}`);
@@ -822,6 +884,17 @@ export class ChicoryTypeChecker {
    }
 
 
+    // Substitute within JsxElement's propsType
+    if (type instanceof JsxElementType) {
+        const substitutedPropsType = this.applySubstitution(type.propsType, substitution, visited) as RecordType; // Assuming propsType is always RecordType
+        if (substitutedPropsType === type.propsType) {
+            return type; // Optimization: return original if props didn't change
+        }
+        // Return a new JsxElementType with the substituted props type
+        const result = new JsxElementType(substitutedPropsType);
+        return result;
+    }
+
     return type; // Return original type if no specific handling matched
   }
 
@@ -868,6 +941,11 @@ export class ChicoryTypeChecker {
       // when unifying function types (constructor types). So an ADT doesn't "contain"
       // the type var in the sense of the `occursIn` check.
       return false;
+    }
+
+    // Check within JsxElement's propsType
+    if (type instanceof JsxElementType) {
+        return this.occursIn(typeVar, type.propsType);
     }
 
     // Primitives and UnknownType don't contain type vars
@@ -1042,9 +1120,10 @@ export class ChicoryTypeChecker {
     this.processingFiles = processingFiles;
 
     // Reset for this check
-    this.environment = new TypeEnvironment(null);
+    this.environment = new TypeEnvironment(null); // Create the root environment for this check
     this.prelude = new Prelude();
-    this.initializePrelude();
+    this.initializePrelude(); // Add prelude types (Option, Result) to the root env
+    this.initializeJsxIntrinsics(); // <<< ADD THIS CALL HERE to add JSX intrinsics to the root env
     this.errors = [];
     this.hints = [];
     this.constructors = this.constructors.filter(
@@ -2870,8 +2949,8 @@ export class ChicoryTypeChecker {
       return this.visitFuncExpr(ctx.funcExpr());
     } else if (ctx instanceof parser.MatchExpressionContext) {
       return this.visitMatchExpr(ctx.matchExpr());
-      // } else if (ctx instanceof parser.JsxExpressionContext) {
-      //   return this.visitJsxExpr(ctx.jsxExpr());
+    } else if (ctx instanceof parser.JsxExpressionContext) {
+       return this.visitJsxExpr(ctx.jsxExpr()); // <<< UNCOMMENT THIS
     }
 
     this.reportError(`Unknown primary expression type: ${ctx.getText()}`, ctx);
@@ -4630,9 +4709,155 @@ export class ChicoryTypeChecker {
   }
 
   visitJsxExpr(ctx: parser.JsxExprContext): ChicoryType {
-    // For now we will treat all JSX as untyped
-    return UnknownType;
+    console.log(`[visitJsxExpr] ENTER: ${ctx.getText().substring(0, 30)}...`);
+    let tagName: string;
+    let attributesCtx: parser.JsxAttributesContext | null = null;
+    let openingElement: parser.JsxOpeningElementContext | null = null;
+    let selfClosingElement: parser.JsxSelfClosingElementContext | null = null;
+
+    if (ctx.jsxOpeningElement()) {
+      openingElement = ctx.jsxOpeningElement()!;
+      tagName = openingElement.IDENTIFIER().getText();
+      attributesCtx = openingElement.jsxAttributes() ?? null;
+      // TODO: Handle children if needed (ctx.jsxChild())
+    } else if (ctx.jsxSelfClosingElement()) {
+      selfClosingElement = ctx.jsxSelfClosingElement()!;
+      tagName = selfClosingElement.IDENTIFIER().getText();
+      attributesCtx = selfClosingElement.jsxAttributes() ?? null;
+    } else {
+      this.reportError("Unknown JSX structure", ctx);
+      return UnknownType;
+    }
+
+    console.log(`  > Tag name: ${tagName}`);
+
+    // Look up the tag name in the environment
+    const elementType = this.environment.getType(tagName);
+
+    if (!elementType) {
+      this.reportError(`Unknown JSX element type: '<${tagName}>'.`, openingElement ?? selfClosingElement ?? ctx);
+      return UnknownType; // Return UnknownType if tag is not defined
+    }
+
+    // Check if the found type is the expected JsxElementType
+    if (!(elementType instanceof JsxElementType)) {
+        this.reportError(`Expected JSX element type for '<${tagName}>', but found type '${elementType.toString()}'. Intrinsic elements should be declared as JsxElementType.`, openingElement ?? selfClosingElement ?? ctx);
+        return UnknownType; // Return UnknownType if the base tag type is wrong
+    }
+
+    // Extract the expected props RecordType from the JsxElementType
+    const expectedPropsType = elementType.propsType;
+
+    // Validate the attributes against the expected RecordType
+    this.visitAndCheckJsxAttributes(attributesCtx, expectedPropsType, tagName, ctx);
+
+    // The type of the JSX expression is the specific JsxElementType found for the tag.
+    this.hints.push({ context: ctx, type: elementType.toString() });
+    this.setExpressionType(ctx, elementType); // Store the specific JsxElementType (e.g., JsxElement<DivProps>)
+    console.log(`[visitJsxExpr] EXIT: Returning type ${elementType.toString()}`);
+    return elementType; // Return the specific JsxElementType found
   }
+  // --- END: visitJsxExpr ---
+
+
+  // --- START: visitAndCheckJsxAttributes ---
+  private visitAndCheckJsxAttributes(
+    attributesCtx: parser.JsxAttributesContext | null,
+    expectedPropsType: RecordType, // The RecordType defining expected props { key?: T, ... }
+    tagName: string,
+    jsxExprCtx: parser.JsxExprContext // For error reporting context
+  ): void {
+    console.log(`[visitAndCheckJsxAttributes] Checking attributes for <${tagName}> against expected type: ${expectedPropsType.toString()}`);
+    const providedAttributeNames = new Set<string>();
+
+    if (!attributesCtx) {
+      console.log(`  > No attributes provided.`);
+      // No attributes provided, just check for missing required ones later.
+    } else {
+      // Iterate through provided attributes
+      for (const attrCtx of attributesCtx.jsxAttribute()) {
+        const attrName = attrCtx.IDENTIFIER().getText();
+        providedAttributeNames.add(attrName);
+        console.log(`  > Checking provided attribute: '${attrName}'`);
+
+        const expectedFieldInfo = expectedPropsType.fields.get(attrName);
+
+        // Check if attribute is expected
+        if (!expectedFieldInfo) {
+          this.reportError(
+            `Unexpected attribute '${attrName}' for JSX element <${tagName}>. Expected props: ${expectedPropsType.toString()}`,
+            attrCtx
+          );
+          continue; // Skip type checking for unexpected attributes
+        }
+
+        // Attribute is expected, now check its value type
+        const expectedInnerType = expectedFieldInfo.type; // The 'T' in 'key: T' or 'key?: T'
+        const isOptional = expectedFieldInfo.optional;
+        let providedValueType: ChicoryType = UnknownType;
+
+        const valueCtx = attrCtx.jsxAttributeValue();
+        if (!valueCtx) {
+          // Boolean shorthand attribute (e.g., <input disabled />)
+          // Check if the expected type is boolean?
+          if (expectedInnerType === BooleanType && isOptional) {
+             providedValueType = BooleanType; // Implicitly true
+             console.log(`    > Boolean shorthand attribute '${attrName}' detected. Type: boolean (true)`);
+          } else {
+             this.reportError(`Attribute '${attrName}' is missing a value. Boolean shorthand is only allowed for optional boolean attributes (e.g., 'prop?: boolean'). Expected type: ${expectedInnerType}`, attrCtx);
+             providedValueType = UnknownType;
+          }
+        } else {
+          // Attribute has a value (e.g., class="hi", count={1})
+          if (valueCtx.expr()) {
+            // Value is an expression { ... }
+            providedValueType = this.visitExpr(valueCtx.expr()!);
+          } else if (valueCtx.STRING()) {
+            providedValueType = StringType;
+          } else if (valueCtx.NUMBER()) {
+            providedValueType = NumberType;
+          } else {
+            this.reportError(`Unknown JSX attribute value type for '${attrName}'`, valueCtx);
+            providedValueType = UnknownType;
+          }
+           console.log(`    > Provided value type for '${attrName}': ${providedValueType.toString()}`);
+        }
+
+        // Unify the provided type with the *expected inner type*
+        // Pass empty visited set
+        const substitutedValueType = this.applySubstitution(providedValueType, this.currentSubstitution, new Set());
+        const unificationResult = this.unify(
+          expectedInnerType, // T
+          substitutedValueType, // Type of the value provided
+          this.currentSubstitution // Use main substitution map
+        );
+
+        if (unificationResult instanceof Error) {
+          // Pass empty visited set
+          const finalExpectedInner = this.applySubstitution(expectedInnerType, this.currentSubstitution, new Set());
+          this.reportError(
+            `Type mismatch for attribute '${attrName}'. Expected type '${finalExpectedInner}' but got '${substitutedValueType}'. ${unificationResult.message}`,
+            valueCtx ?? attrCtx // Report on value if present, else on attribute name
+          );
+        } else {
+           console.log(`    > Attribute '${attrName}' type check successful.`);
+        }
+      }
+    }
+
+    // Check for missing required attributes
+    for (const [expectedAttrName, expectedFieldInfo] of expectedPropsType.fields) {
+      if (!expectedFieldInfo.optional && !providedAttributeNames.has(expectedAttrName)) {
+        this.reportError(
+          `Missing required attribute '${expectedAttrName}' for JSX element <${tagName}>. Expected type: ${expectedFieldInfo.type.toString()}`,
+          jsxExprCtx // Report error on the JSX element itself
+        );
+      }
+    }
+    console.log(`[visitAndCheckJsxAttributes] Finished checking attributes for <${tagName}>.`);
+  }
+  // --- END: visitAndCheckJsxAttributes ---
+
 
   private instantiateGenericType(
     genericType: GenericType,
