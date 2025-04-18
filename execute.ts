@@ -8,9 +8,10 @@ const usageInstructions = `
 Usage:
   chicory [options] [file]
 Options:
-  --compile  Compile the file and print the compiled code
-  --help     Print this help message
-  --version  Print the version number
+  --compile / -c  Compile the file and print the compiled code
+  --hints         Also print type hints (must be used with --compile)
+  --help / -h     Print this help message
+  --version       Print the version number
 File:
   The file to compile/exec
 `
@@ -39,7 +40,7 @@ const file = Bun.file(filePath);
 const source = await file.text();
 
 console.log(yellow(" ⚡ Compiling Chicory Source ⚡"));
-const { code, errors } = compile(source, filePath) || { code: "", errors: [] };
+const { code, errors, hints } = compile(source, filePath) || { code: "", errors: [] };
 
 if (errors.length > 0) {
   console.error(errors.map((error, index) => 
@@ -51,6 +52,11 @@ if (errors.length > 0) {
 
 // if "--compile" flag is passed, print the compiled code and exit:
 if (options.includes("--compile") || options.includes("-c")) {
+  if (options.includes("--hints") && hints.length > 0) {
+    console.log(yellow(" ⚡ Hints ⚡"));
+    console.log(JSON.stringify(hints, null, 4));
+  }
+
   console.log(yellow(" ⚡ Compiled Code ⚡"));
   console.log(code);
   process.exit(0);

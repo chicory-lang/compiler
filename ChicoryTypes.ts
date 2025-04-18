@@ -50,12 +50,18 @@ export class FunctionType implements ChicoryType {
   }
 }
 
+// Record Type Field Definition
+export interface RecordField {
+    type: ChicoryType;
+    optional: boolean;
+}
+
 // Record Type
 export class RecordType implements ChicoryType {
-  constructor(public fields: Map<string, ChicoryType>) {}
+  constructor(public fields: Map<string, RecordField>) {} // Store RecordField objects
   toString() {
     const fieldStrings = Array.from(this.fields.entries()).map(
-      ([key, value]) => `${key}: ${value.toString()}`
+      ([key, field]) => `${key}${field.optional ? "?" : ""}: ${field.type.toString()}` // Add '?' if optional
     );
     return `{ ${fieldStrings.join(", ")} }`;
   }
@@ -163,9 +169,10 @@ export function typesAreEqual(type1: ChicoryType, type2: ChicoryType): boolean {
       return false;
     }
 
-    for (const [key, value] of type1.fields) {
-      const value2 = type2.fields.get(key);
-      if (!value2 || !typesAreEqual(value, value2)) {
+    // Compare fields based on type and optional flag
+    for (const [key, field1] of type1.fields) {
+      const field2 = type2.fields.get(key);
+      if (!field2 || field1.optional !== field2.optional || !typesAreEqual(field1.type, field2.type)) {
         return false;
       }
     }

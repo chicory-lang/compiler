@@ -23,6 +23,7 @@ import {
   BooleanTypeClass,
   UnitTypeClass,
   UnknownTypeClass,
+  RecordField,
 } from "./ChicoryTypes";
 import { TypeEnvironment } from "./TypeEnvironment";
 import {
@@ -488,52 +489,70 @@ export class ChicoryTypeChecker {
     if (type1 instanceof RecordType && type2 instanceof RecordType) {
       console.log(`[unify] BRANCH: RecordType vs RecordType`);
       // Check fields of type1 against type2
-      for (const [key1, fieldType1] of type1.fields) {
-        const fieldType2 = type2.fields.get(key1);
+      for (const [key1, fieldInfo1] of type1.fields) {
+        const fieldInfo2 = type2.fields.get(key1);
 
-        if (!fieldType2) {
-          // Field from type1 is missing in type2
-          // Check if the missing field is optional in type1
-          const isOptional =
-            fieldType1 instanceof GenericType && fieldType1.name === "Option";
-          if (!isOptional) {
-            const error = new Error(
-              `Missing required field '${key1}' in record type '${type2}' (expected by type '${type1}')`
-            );
-            console.error(`[unify] ERROR: ${error.message}`);
-            console.log(`[unify] EXIT (error)`);
-            return error;
-          }
-          // If it's optional and missing, it's okay, continue checking other fields
-          console.log(
-            `  > Optional field '${key1}' missing in type2, allowed.`
-          );
-        } else {
-          // Field exists in both, unify their types recursively
-          console.log(`  > Recursively unifying field '${key1}'`);
-          const result = this.unify(fieldType1, fieldType2, substitution);
-          if (result instanceof Error) {
-            const error = new Error(
-              `Cannot unify field '${key1}': ${result.message}`
-            );
-            console.error(`[unify] ERROR: ${error.message}`);
-            console.log(`[unify] EXIT (error)`);
-            return error;
-          }
+        if (!fieldInfo2) {
+          // Field from type1 is missing in type2.
+          // For unification, this is generally an error unless the field in type1 is optional.
+          // However, the logic below for checking extra/missing fields handles this more robustly.
+          // We can simply proceed to the next field in type1 for now.
+          continue; // Skip to the next field in type1
         }
-      }
 
-      // Check for extra fields in type2 not present in type1
-      for (const key2 of type2.fields.keys()) {
-        if (!type1.fields.has(key2)) {
+        // Field exists in both, check optional flag and unify inner types
+        if (fieldInfo1.optional !== fieldInfo2.optional) {
           const error = new Error(
-            `Record type '${type2}' has extra field '${key2}' not present in type '${type1}'`
+            `Field '${key1}' optional mismatch: Optional=${fieldInfo1.optional} in '${type1}', Optional=${fieldInfo2.optional} in '${type2}'`
+          );
+          console.error(`[unify] ERROR: ${error.message}`);
+          console.log(`[unify] EXIT (error)`);
+          return error;
+        }
+
+        console.log(`  > Recursively unifying field '${key1}'`);
+        const result = this.unify(fieldInfo1.type, fieldInfo2.type, substitution); // Unify inner types
+        if (result instanceof Error) {
+          const error = new Error(
+            `Cannot unify type for field '${key1}': ${result.message}`
           );
           console.error(`[unify] ERROR: ${error.message}`);
           console.log(`[unify] EXIT (error)`);
           return error;
         }
       }
+
+      // Check for extra fields in type2 not present in type1
+      for (const key2 of type2.fields.keys()) {
+        if (!type1.fields.has(key2)) {
+           // Allow unification if the extra field in type2 is optional?
+           // ReScript allows { name: string } to be passed where { name: string, age?: int } is expected.
+           // Let's allow this for now - type2 can have *extra optional* fields.
+           const fieldInfo2 = type2.fields.get(key2)!;
+           if (!fieldInfo2.optional) {
+               const error = new Error(
+                   `Record type '${type2}' has extra required field '${key2}' not present in type '${type1}'`
+               );
+               console.error(`[unify] ERROR: ${error.message}`);
+               console.log(`[unify] EXIT (error)`);
+               return error;
+           }
+           console.log(`  > Allowing extra optional field '${key2}' from type2.`);
+        }
+      }
+
+      // Check for required fields in type1 missing in type2
+      for (const [key1, fieldInfo1] of type1.fields) {
+          if (!type2.fields.has(key1) && !fieldInfo1.optional) {
+              const error = new Error(
+                  `Record type '${type2}' is missing required field '${key1}' from type '${type1}'`
+              );
+              console.error(`[unify] ERROR: ${error.message}`);
+              console.log(`[unify] EXIT (error)`);
+              return error;
+          }
+      }
+
 
       // If all checks pass, unification succeeds.
       // Return the potentially more specific type (type1, after substitutions)
@@ -781,24 +800,26 @@ export class ChicoryTypeChecker {
     }
 
     // Add RecordType substitution
-    if (type instanceof RecordType) {
-        let changed = false;
-        const newFields = new Map<string, ChicoryType>();
-        for (const [key, fieldType] of type.fields) {
-            // Recursively apply substitution to each field's type
-            const newFieldType = this.applySubstitution(fieldType, substitution, visited);
-            if (newFieldType !== fieldType) {
-                changed = true;
-            }
-            newFields.set(key, newFieldType);
-        }
-        if (!changed) {
-            return type; // Optimization: return original if no fields changed
-        }
-        // Return a new RecordType with the potentially updated field types
-        const result = new RecordType(newFields);
-        return result;
-    }
+   if (type instanceof RecordType) {
+       let changed = false;
+       const newFields = new Map<string, RecordField>();
+       for (const [key, fieldInfo] of type.fields) {
+           // Recursively apply substitution to the field's inner type
+           const newFieldType = this.applySubstitution(fieldInfo.type, substitution, visited);
+           if (newFieldType !== fieldInfo.type) {
+               changed = true;
+               newFields.set(key, { type: newFieldType, optional: fieldInfo.optional });
+           } else {
+               newFields.set(key, fieldInfo); // No change, reuse original field info
+           }
+       }
+       if (!changed) {
+           return type; // Optimization: return original if no fields changed
+       }
+       // Return a new RecordType with the potentially updated field types
+       const result = new RecordType(newFields);
+       return result;
+   }
 
 
     return type; // Return original type if no specific handling matched
@@ -835,8 +856,9 @@ export class ChicoryTypeChecker {
     }
 
     if (type instanceof RecordType) {
-      return Array.from(type.fields.values()).some((f) =>
-        this.occursIn(typeVar, f)
+      // Check the inner type of each field
+      return Array.from(type.fields.values()).some((fieldInfo) =>
+        this.occursIn(typeVar, fieldInfo.type)
       );
     }
 
@@ -1138,29 +1160,140 @@ export class ChicoryTypeChecker {
         new Set()
       ); // Apply subs to annotation too
 
-      // --- Isolate Unification Substitution ---
-      // Create a fresh substitution map specifically for this unification
-      const unificationSubstitution = new Map<number, ChicoryType>();
-      console.log(`[visitAssignStmt] Starting unification with fresh substitution map.`);
+      // --- Resolve Annotated Type if Alias ---
+      let resolvedAnnotatedType = annotatedType;
+      if (annotatedType instanceof GenericType && this.typeAliasDefinitions.has(annotatedType.name)) {
+          console.log(`[visitAssignStmt] Annotated type is alias ${annotatedType}. Expanding.`);
+          // Pass empty visited set for self-contained expansion
+          resolvedAnnotatedType = this.expandAliasOnce(annotatedType, this.currentSubstitution); // Expand using current context
+          console.log(`[visitAssignStmt] Expanded annotated type to: ${resolvedAnnotatedType?.toString()}`);
+      } else if (annotatedType instanceof AdtType && this.typeAliasDefinitions.has(annotatedType.name)) {
+          // Handle non-generic aliases as well
+          console.log(`[visitAssignStmt] Annotated type is non-generic alias ${annotatedType}. Expanding.`);
+          resolvedAnnotatedType = this.expandAliasOnce(annotatedType, this.currentSubstitution);
+          console.log(`[visitAssignStmt] Expanded annotated type to: ${resolvedAnnotatedType?.toString()}`);
+      }
+      // --- End Resolve ---
 
-      // Unify the annotated type with the inferred expression type using the fresh map
-      const unificationResult = this.unify(
-        annotatedType,
-        expressionType,
-        unificationSubstitution // Pass the fresh map here
-      );
 
-      if (unificationResult instanceof Error) {
+      // --- Custom Assignment Check for Records ---
+      let assignmentError: Error | null = null;
+      const unificationSubstitution = new Map<number, ChicoryType>(); // Still need for unifying inner types
+
+      // Check if the *resolved* annotated type is a RecordType and the expression is a RecordType
+      if (resolvedAnnotatedType instanceof RecordType && expressionType instanceof RecordType) {
+          console.log(`[visitAssignStmt] Performing custom record assignment check (Resolved Annotation vs Expression).`);
+          const expectedRecordType = resolvedAnnotatedType; // Use the resolved type
+          // Check compatibility field by field
+          const expectedFields = expectedRecordType.fields; // Use fields from resolved type
+          const providedFields = expressionType.fields;
+          const providedKeys = new Set(providedFields.keys());
+
+          // 1. Check fields expected by the annotation
+          for (const [key, expectedField] of expectedFields) {
+              const providedField = providedFields.get(key);
+
+              if (providedField) {
+                  // Field provided in literal
+
+                  // --- NEW: Check Optional Flag Compatibility ---
+                  // Allow assigning a non-optional field from the expression (providedField.optional === false)
+                  // to an optional field in the annotation (expectedField.optional === true).
+                  // Disallow assigning an optional field from expr to a required field in annotation.
+                  if (!expectedField.optional && providedField.optional) {
+                      // This case should ideally not happen if inference is correct, but check anyway
+                      assignmentError = new Error(`Internal Error? Cannot assign optional field '${key}' from expression to required field '${key}' in annotation.`);
+                      break;
+                  }
+                  // The case where expectedField.optional is true and providedField.optional is false IS ALLOWED.
+                  // --- END NEW Check ---
+
+
+                  // --- Refined Unification Logic for Assignment ---
+                  let fieldUnificationResult: ChicoryType | Error;
+                  if (expectedField.optional && providedField.type instanceof GenericType && providedField.type.name === "Option") {
+                      // Case: Assigning an explicit Option<U> (e.g., Some(1)) to an optional field (e.g., key?: T)
+                      // Unify the expected inner type (T) with the provided Option's inner type (U)
+                      console.log(`  > Assigning Option to optional field '${key}'. Unifying inner types: '${expectedField.type}' vs '${providedField.type.typeArguments[0]}'`);
+                      fieldUnificationResult = this.unify(
+                          expectedField.type, // T
+                          providedField.type.typeArguments[0], // U
+                          unificationSubstitution
+                      );
+                  } else if (expectedField.optional && !(providedField.type instanceof GenericType && providedField.type.name === "Option")) {
+                      // Case: Assigning a non-Option value (e.g., 1) to an optional field (e.g., key?: T)
+                      // Unify the expected inner type (T) with the provided type (e.g., number)
+                       console.log(`  > Assigning non-Option to optional field '${key}'. Unifying inner type '${expectedField.type}' vs provided '${providedField.type}'`);
+                      fieldUnificationResult = this.unify(
+                          expectedField.type, // T
+                          providedField.type, // e.g., number
+                          unificationSubstitution
+                      );
+                  } else {
+                      // Case: Assigning to a required field, or assigning Option to required (which should fail)
+                      // Unify the expected type directly with the provided type.
+                      console.log(`  > Assigning to required field '${key}'. Unifying expected '${expectedField.type}' vs provided '${providedField.type}'`);
+                      fieldUnificationResult = this.unify(
+                          expectedField.type,
+                          providedField.type,
+                          unificationSubstitution
+                      );
+                  }
+                  // --- End Refined Unification ---
+
+                  if (fieldUnificationResult instanceof Error) {
+                      assignmentError = new Error(`Type mismatch for field '${key}'. Expected '${expectedField.type}' but got '${providedField.type}'. ${fieldUnificationResult.message}`);
+                      break;
+                  }
+              } else {
+                  // Field not provided in literal
+                  if (!expectedField.optional) {
+                      assignmentError = new Error(`Missing required field '${key}' in expression assigned to type '${annotatedType}'.`);
+                      break;
+                  }
+                  // Missing optional field is allowed
+              }
+          }
+
+          // 2. Check for extra fields in the expression (if no error yet)
+          if (!assignmentError) {
+              for (const key of providedKeys) {
+                  if (!expectedFields.has(key)) {
+                      assignmentError = new Error(`Expression provides extra field '${key}' not expected by annotated type '${annotatedType}'.`);
+                      break;
+                  }
+              }
+          }
+          console.log(`[visitAssignStmt] Custom record check result: ${assignmentError ? `Error (${assignmentError.message})` : 'Success'}`);
+
+      } else {
+          // --- Default Unification ---
+          // Use the original annotatedType for default unification if custom check doesn't apply
+          // This handles cases like `let x: number = 1` or `let f: (number) => string = (x) => ...`
+          console.log(`[visitAssignStmt] Using default unification (Annotation vs Expression).`);
+          const unificationResult = this.unify(
+              annotatedType, // Use original annotated type here
+              expressionType,
+              unificationSubstitution
+          );
+          if (unificationResult instanceof Error) {
+              assignmentError = unificationResult; // Store the error
+          }
+      }
+      // --- End Custom/Default Check ---
+
+
+      if (assignmentError) {
         this.reportError(
-          `Type mismatch: Cannot assign expression of type '${expressionType}' to target annotated with type '${annotatedType}'. ${unificationResult.message}`,
+          `Type mismatch: Cannot assign expression of type '${expressionType}' to target annotated with type '${annotatedType}'. ${assignmentError.message}`, // Correctly use assignmentError.message
           ctx
         );
         // Use annotated type to proceed, respecting user intent partially
         rhsFinalType = annotatedType;
       } else {
-        // Unification successful, use the unified type (which might be more specific)
+        // Assignment compatible, use the unified type (which might be more specific)
         // Merge the successful unification's substitutions back into the main context
-        console.log(`[visitAssignStmt] Unification successful. Merging unification substitutions:`, new Map(unificationSubstitution));
+        console.log(`[visitAssignStmt] Assignment compatible. Merging unification substitutions:`, new Map(unificationSubstitution));
         for (const [key, value] of unificationSubstitution.entries()) {
             // Apply the outer substitution to the value *before* merging,
             // to handle cases where unification bound T -> T' and outer context binds T' -> number.
@@ -1741,60 +1874,37 @@ export class ChicoryTypeChecker {
     const recordType = new RecordType(new Map());
     ctx.recordTypeAnnotation().forEach((kv) => {
       const id = kv.IDENTIFIER()[0].getText();
-      let val: ChicoryType;
-      const isOptional = kv.QUESTION() !== null;
+      let fieldType: ChicoryType; // Renamed from 'val'
+      const isOptional = kv.QUESTION() !== null; // Check if '?' is present
 
       // Pass map down when resolving field types
       if (kv.primitiveType()) {
-        val = this.getPrimitiveType(kv.primitiveType()!);
+        fieldType = this.getPrimitiveType(kv.primitiveType()!);
       } else if (kv.recordType()) {
-        val = this.visitRecordType(kv.recordType()!, typeVarsInSig); // Pass map
+        fieldType = this.visitRecordType(kv.recordType()!, typeVarsInSig); // Pass map
       } else if (kv.tupleType()) {
-        val = this.visitTupleType(kv.tupleType()!, typeVarsInSig); // Pass map
+        fieldType = this.visitTupleType(kv.tupleType()!, typeVarsInSig); // Pass map
       } else if (kv.functionType()) {
         // visitFunctionType creates its own scope/map, doesn't need the outer one passed
-        val = this.visitFunctionType(kv.functionType()!);
-      } else if (kv.genericTypeExpr()) { // <<< ADDED: Handle GenericTypeExpr like Option<string>
-        val = this.visitGenericTypeExpr(kv.genericTypeExpr()!, typeVarsInSig); // Pass map
+        fieldType = this.visitFunctionType(kv.functionType()!);
+      } else if (kv.genericTypeExpr()) {
+        fieldType = this.visitGenericTypeExpr(kv.genericTypeExpr()!, typeVarsInSig); // Pass map
       } else if (kv.IDENTIFIER()?.length > 1) { // Handles simple Identifier like 'User' or 'T'
         // Ensure it's the type identifier case
         const rhs = kv.IDENTIFIER()[1].getText(); // This assumes the second IDENTIFIER is the type
         // Check signature vars first, then environment, then fallback
-        val =
+        fieldType =
           typeVarsInSig?.get(rhs) ||
           this.environment.getType(rhs) ||
           new GenericType(this.nextTypeVarId++, rhs, []); // Fallback placeholder
       } else {
         this.reportError(`Unknown record type annotation: ${kv.getText()}`, kv);
-        val = UnknownType;
+        fieldType = UnknownType;
       }
 
-      // If the field is marked optional (?), wrap its type in Option<...>
-      // UNLESS the type itself is already Option<...>
-      let finalFieldType: ChicoryType = val;
-      if (isOptional) {
-          // Check if the parsed type 'val' is already an Option
-          if (!(val instanceof GenericType && val.name === "Option")) {
-              // If not already Option, wrap it
-              const optionGenericDef = this.environment.getType("Option"); // Get the Option<T> definition
-              if (optionGenericDef instanceof GenericType) {
-                  // Ensure we use the Option name from the definition ("Option")
-                  finalFieldType = new GenericType(this.nextTypeVarId++, optionGenericDef.name, [val]);
-                  this.prelude.requireOptionType();
-                  console.log(`[visitRecordType] Wrapped optional field '${id}' type ${val.toString()} -> ${finalFieldType.toString()}`);
-              } else {
-                  this.reportError("Option<T> builtin is not correctly defined.", kv);
-                  finalFieldType = UnknownType; // Fallback on error
-              }
-          } else {
-              // If 'val' is already Option<...>, use it directly.
-              console.log(`[visitRecordType] Optional field '${id}' already has type ${val.toString()}. Not wrapping again.`);
-              finalFieldType = val; // Use the existing Option type
-              this.prelude.requireOptionType(); // Still require prelude if Option is used explicitly
-          }
-      }
-
-      recordType.fields.set(id, finalFieldType);
+      // Store the field type and the optional flag directly
+      recordType.fields.set(id, { type: fieldType, optional: isOptional });
+      console.log(`[visitRecordType] Defined field '${id}' with type ${fieldType.toString()} (Optional: ${isOptional})`);
     });
     return recordType;
   }
@@ -1831,7 +1941,8 @@ export class ChicoryTypeChecker {
               (typeVarsInSig?.get(typeName) ?? new GenericType(this.nextTypeVarId++, typeName, []));
           }
 
-          recordType.fields.set(fieldName, fieldType);
+          // Wrap the fieldType in a RecordField object (implicitly required)
+          recordType.fields.set(fieldName, { type: fieldType, optional: false });
         });
 
         constructorType = new FunctionType(
@@ -2174,10 +2285,26 @@ export class ChicoryTypeChecker {
           // Get the field type directly from the expanded record type (accessTargetType).
           // expandAliasOnce already produced the correctly substituted type for this instance (e.g., Option<number>).
           // We use this field type directly as the result for the member access.
-          const fieldType = accessTargetType.fields.get(memberName)!;
+          const fieldInfo = accessTargetType.fields.get(memberName)!;
+          const fieldType = fieldInfo.type;
           console.log(`[visitTailExpr] Retrieved field '${memberName}' type directly from expanded record: ${fieldType.toString()}`);
-          // Assign the retrieved field type directly to resultType. No further substitution needed here.
-          resultType = fieldType;
+
+          if (fieldInfo.optional) {
+            // If the field is optional (marked with ?), the access result is Option<FieldType>
+            const optionType = this.environment.getType("Option");
+            if (optionType instanceof GenericType) {
+               resultType = new GenericType(this.nextTypeVarId++, optionType.name, [fieldType]);
+               this.prelude.requireOptionType();
+               console.log(`[visitTailExpr] Optional field '${memberName}' accessed. Result type: ${resultType.toString()}`);
+            } else {
+               this.reportError("Option<T> builtin is not correctly defined.", ctx);
+               resultType = UnknownType;
+            }
+          } else {
+            // If the field is required, the access result is the field type directly
+            resultType = fieldType;
+            console.log(`[visitTailExpr] Required field '${memberName}' accessed. Result type: ${resultType.toString()}`);
+          }
         }
       } else if (accessTargetType instanceof ArrayType) { // Check expanded type
         // Array methods logic: The element type needs to be derived from the potentially expanded accessTargetType
@@ -3029,19 +3156,78 @@ export class ChicoryTypeChecker {
   }
 
   visitRecordExpr(ctx: parser.RecordExprContext): ChicoryType {
-    const fields = new Map<string, ChicoryType>();
+    const fields = new Map<string, RecordField>();
     ctx.recordKvExpr().forEach((kv) => {
       const key = kv.IDENTIFIER().getText();
       const valueType = this.visitExpr(kv.expr());
-      fields.set(key, valueType);
+      fields.set(key, { type: valueType, optional: false });
     });
 
-    const recordType = new RecordType(fields);
-    // Do NOT add hint here; it will be added by the calling context (e.g., visitCallExpr)
-    // after potential unification which might refine the type.
-    // this.hints.push({ context: ctx, type: recordType.toString() });
+    const literalRecordType = new RecordType(fields);
 
-    return recordType;
+    // --- Type Check Against Expected Type (if provided) ---
+    // This logic is primarily for assignment/function args where an expected type exists.
+    // We need to get the expected type from the context (e.g., assignment annotation).
+    // This requires modifying how visitExpr/visitAssignStmt pass down expected types.
+    // For now, we'll focus on the structure; integration needs refinement.
+
+    // Example placeholder for expected type logic:
+    // const expectedType = this.getExpectedTypeForContext(ctx); // Hypothetical function
+    // if (expectedType instanceof RecordType) {
+    //    this.checkRecordLiteralAgainstExpected(literalRecordType, expectedType, ctx);
+    // }
+
+    // Store the inferred type of the literal itself
+    this.setExpressionType(ctx, literalRecordType);
+    this.hints.push({ context: ctx, type: literalRecordType.toString() });
+
+    return literalRecordType;
+  }
+
+  // Helper (potentially moved or integrated into unify/visitAssignStmt)
+  private checkRecordLiteralAgainstExpected(
+      literalType: RecordType,
+      expectedType: RecordType,
+      ctx: parser.RecordExprContext
+  ): void {
+      const providedKeys = new Set(literalType.fields.keys());
+
+      // Check provided fields against expected fields
+      for (const [key, literalField] of literalType.fields) {
+          const expectedField = expectedType.fields.get(key);
+          if (!expectedField) {
+              this.reportError(`Field '${key}' is not expected in type '${expectedType}'`, ctx);
+              continue;
+          }
+
+          let typeToUnify = literalField.type; // Type provided in the literal
+
+          // Unify the provided type with the *inner* type of the expected field
+          const unificationResult = this.unify(
+              expectedField.type, // The T in expected type { key: T } or { key?: T }
+              typeToUnify,
+              this.currentSubstitution
+          );
+
+          if (unificationResult instanceof Error) {
+              this.reportError(
+                  `Type mismatch for field '${key}'. Expected '${expectedField.type}', but got '${typeToUnify}'. ${unificationResult.message}`,
+                  ctx // TODO: Pinpoint error to specific kv pair context
+              );
+          }
+      }
+
+      // Check for missing fields
+      for (const [key, expectedField] of expectedType.fields) {
+          if (!providedKeys.has(key)) {
+              // Field is missing in the literal
+              if (!expectedField.optional) {
+                  // It's missing AND required
+                  this.reportError(`Missing required field '${key}' in record literal of type '${expectedType}'`, ctx);
+              }
+              // If it's missing and optional, it's allowed.
+          }
+      }
   }
 
   visitArrayLikeExpr(ctx: parser.ArrayLikeExprContext): ChicoryType {

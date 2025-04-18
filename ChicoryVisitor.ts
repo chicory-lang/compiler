@@ -618,46 +618,78 @@ export class ChicoryParserVisitor {
       compiledKvs.push(this.visitRecordKvExpr(kv));
     });
 
-    // --- Modified Optional Field Handling ---
-    // Resolve the expectedType (which might be a GenericType alias like Box<number>)
-    // to its underlying RecordType definition.
-    const resolvedRecordType = expectedType
-      ? this.typeChecker.resolveToRecordType(expectedType)
-      : null;
+    // --- NEW Optional Field Handling (Rescript Style) ---
+    // Use the *expected* type passed down from the calling context (assignment, function arg, etc.)
+    // const expectedRecordType = this.expressionTypes.get(ctx); // <<< OLD: Used inferred type of the literal itself
+    const expectedRecordType = expectedType; // <<< NEW: Use the passed-down expected type
+    let finalRecordType: RecordType | null = null;
 
-    if (resolvedRecordType) {
-      console.log(`[visitRecordExpr] Resolved expected type to RecordType: ${resolvedRecordType.toString()}`);
-      for (const [expectedKey, expectedFieldType] of resolvedRecordType.fields) {
-        if (!providedKeys.has(expectedKey)) {
-          console.log(`  > Field '${expectedKey}' is missing in literal.`);
-          // Field is missing in the literal
-          // Check if the expected type is Option<...>
-          if (
-            // Check if the expected type (from the resolved record def) is Option<...>
-            expectedFieldType instanceof GenericType &&
-            expectedFieldType.name === "Option"
-          ) {
-            console.log(`    > Field '${expectedKey}' is optional (Option). Adding None().`);
-            // It's an optional field, add None()
-            compiledKvs.push(`${expectedKey}: None()`);
-            // Ensure prelude includes Option if not already triggered
-            this.typeChecker.prelude.requireOptionType();
-          } else {
-            console.log(`    > Field '${expectedKey}' is missing but not optional. Type checker should have caught this.`);
-            // If it's missing and *not* optional, the type checker should have errored.
-            // The compiler doesn't need to add anything here in that case.
-          }
-        }
-      }
-    } else if (resolvedRecordType) {
-        console.log(`[visitRecordExpr] Expected type is not a RecordType after resolution: ${expectedType?.toString()}`);
+    if (expectedRecordType) {
+        // Resolve potential aliases to get the underlying RecordType
+        finalRecordType = this.typeChecker.resolveToRecordType(expectedRecordType);
+        console.log(`[visitRecordExpr] Expected type (from param/annotation) resolved to: ${finalRecordType?.toString()}`); // Adjusted log
     } else {
-        console.log(`[visitRecordExpr] No expected type provided or could not resolve to RecordType.`);
+        console.log(`[visitRecordExpr] No expected type passed down for record literal.`); // Adjusted log
+        // If no expected type, compile literally (no Some/None wrapping)
+        // This happens for inferred records: let r = { a: 1 }
     }
-    // --- End Modified Optional Field Handling ---
 
+    if (finalRecordType) {
+        // Expected type IS a RecordType, apply wrapping logic
+        const finalCompiledKvs: string[] = [];
 
-    return `{ ${compiledKvs.join(", ")} }`;
+        // Process provided fields
+        ctx.recordKvExpr().forEach((kv) => {
+            const key = kv.IDENTIFIER().getText();
+            const valueJs = this.visitExpr(kv.expr()); // Compile the value expression
+            const expectedFieldInfo = finalRecordType!.fields.get(key);
+            const valueExprCtx = kv.expr(); // Get the original expression context for the value
+
+            if (expectedFieldInfo?.optional) {
+                // Check if the original expression was already Some(...) or None
+                const valueText = valueExprCtx.getText();
+                const alreadyWrapped = valueText.startsWith("Some(") || valueText === "None"; // Basic check
+
+                if (alreadyWrapped) {
+                    // If already wrapped in source, compile it directly without adding another Some()
+                    finalCompiledKvs.push(`${key}: ${valueJs}`);
+                    this.typeChecker.prelude.requireOptionType(); // Still need prelude
+                    console.log(`  > Compiling optional field '${key}': Value already wrapped ('${valueText}'). Using direct value.`);
+                } else {
+                    // If not already wrapped, wrap the compiled value in Some()
+                    finalCompiledKvs.push(`${key}: Some(${valueJs})`);
+                    this.typeChecker.prelude.requireOptionType(); // Ensure Some/None are available
+                    console.log(`  > Compiling optional field '${key}': Wrapping value in Some().`);
+                }
+            } else {
+                // If the expected field is required, compile directly
+                finalCompiledKvs.push(`${key}: ${valueJs}`);
+                 if (!expectedFieldInfo) {
+                     console.warn(`  > Field '${key}' provided but not found in expected type ${finalRecordType}. Compiling literally.`);
+                 } else {
+                     console.log(`  > Compiling required field '${key}': Using direct value.`);
+                 }
+            }
+            providedKeys.add(key); // Track provided keys
+        });
+
+        // Add None() for omitted optional fields
+        for (const [expectedKey, expectedFieldInfo] of finalRecordType.fields) {
+            if (!providedKeys.has(expectedKey) && expectedFieldInfo.optional) {
+                finalCompiledKvs.push(`${expectedKey}: None()`);
+                this.typeChecker.prelude.requireOptionType();
+                console.log(`  > Compiling omitted optional field '${expectedKey}': Adding None().`);
+            }
+            // Omitted required fields are type errors, already handled by checker.
+        }
+        return `{ ${finalCompiledKvs.join(", ")} }`;
+
+    } else {
+        // No expected type or not a record type, compile literally
+        console.log(`[visitRecordExpr] Compiling record literally (no expected type or not a record).`);
+        return `{ ${compiledKvs.join(", ")} }`;
+    }
+    // --- End NEW Optional Field Handling ---
   }
 
   visitRecordKvExpr(ctx: parser.RecordKvExprContext): string {

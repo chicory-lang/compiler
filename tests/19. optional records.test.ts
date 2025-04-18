@@ -1,10 +1,6 @@
 import { expect, test } from "bun:test";
 import compile from "../compile"; // Adjust path as needed
-import {
-  StringType,
-  NumberType,
-  GenericType,
-} from "../ChicoryTypes"; // Adjust path
+import { StringType, NumberType, GenericType } from "../ChicoryTypes"; // Adjust path
 
 test("should define and typecheck record with optional field", () => {
   const chicoryCode = `
@@ -13,12 +9,21 @@ test("should define and typecheck record with optional field", () => {
         name?: string // Optional field
       }
 
-      let user1: User = { id: 1, name: Some("Alice") } // Note that name is expected to be an Option<string>
+      let user1: User = { id: 1, name: "Alice" } // Note that name is expected to be a string when being defined, but is accessed as an Option
       let user2: User = { id: 2 } // name is omitted, should be valid
 
       // Accessing optional field should yield Option<string>
       let name1 = user1.name
       let name2 = user2.name
+
+      match (name1) {
+        Some(n) => n
+        None => "Unknown"
+      }
+      match (name2) {
+        Some(n) => n
+        None => "Unknown"
+      }
     `;
   const { code, errors, hints } = compile(chicoryCode);
 
@@ -33,11 +38,8 @@ test("should define and typecheck record with optional field", () => {
   ); // 'name2' variable
 
   // Assuming Option<string> stringifies correctly
-  const expectedOptionStringType = new GenericType(42, "Option", [
-    StringType,
-  ]).toString();
-  expect(name1Hint?.type).toBe(expectedOptionStringType);
-  expect(name2Hint?.type).toBe(expectedOptionStringType);
+  expect(name1Hint?.type).toBe("Option<string>");
+  expect(name2Hint?.type).toBe("Option<string>");
 
   // Basic check that code compiles
   expect(code).toContain('let user1 = { id: 1, name: Some("Alice") };');
@@ -51,7 +53,7 @@ test("should fail typecheck if required field is missing", () => {
         name?: string
       }
 
-      let user: User = { name: Some("Bob") } // Should give error for missing 'id'
+      let user: User = { name: "Bob" } // Should give error for missing 'id'
     `;
   const { errors } = compile(chicoryCode);
   // This error might come from the assignment check, not the type definition itself
@@ -64,31 +66,11 @@ test("should fail typecheck if required field is missing", () => {
   ).toBe(true);
 });
 
-test("should fail typecheck if optional field assigned wrong type", () => {
-  const chicoryCode = `
-      type Config = {
-        timeout?: number,
-        retries: number
-      }
-
-      let config: Config = { retries: 3, timeout: 500 } // 'timeout' should be Option<number>
-    `;
-  const { errors } = compile(chicoryCode);
-  expect(errors.length).toBeGreaterThan(0);
-  // Check for a type mismatch error related to 'timeout'
-  expect(
-    errors.some(
-      (e) =>
-        e.message.includes("Option<number>") && e.message.includes("number")
-    )
-  ).toBe(true);
-});
-
 test("should work with match on optional field", () => {
   const chicoryCode = `
       type User = { id: number, name?: string }
       let u1: User = { id: 1 }
-      let u2: User = { id: 2, name: Some("Charlie") }
+      let u2: User = { id: 2, name: "Charlie" }
 
       let greeting1 = match (u1.name) {
         Some(n) => "Hello, " + n
@@ -110,7 +92,7 @@ test("should work with match on optional field", () => {
   const greeting2Hint = hints.find(
     (h) => h.range.start.line === 10 && h.range.start.character === 10
   );
-  console.log("GG", greeting1Hint, greeting2Hint)
+  console.log("GG", greeting1Hint, greeting2Hint);
   expect(greeting1Hint?.type).toBe(StringType.toString());
   expect(greeting2Hint?.type).toBe(StringType.toString());
 });
@@ -119,9 +101,9 @@ test("should work with generic optional fields", () => {
   const chicoryCode = `
         type Box<T> = { value?: T, label: string }
 
-        let b1: Box<number> = { label: "Age", value: Some(30) }
+        let b1: Box<number> = { label: "Age", value: 30 }
         let b2: Box<number> = { label: "Count" }
-        let b3: Box<string> = { label: "Message", value: Some("Hi") }
+        let b3: Box<string> = { label: "Message", value: "Hi" }
 
         let val1 = b1.value // Option<number>
         let val2 = b2.value // Option<number>
@@ -140,15 +122,9 @@ test("should work with generic optional fields", () => {
     (h) => h.range.start.line === 9 && h.range.start.character === 12
   );
 
-  expect(val1Hint?.type).toBe(
-    new GenericType(1, "Option", [NumberType]).toString()
-  );
-  expect(val2Hint?.type).toBe(
-    new GenericType(2, "Option", [NumberType]).toString()
-  );
-  expect(val3Hint?.type).toBe(
-    new GenericType(3, "Option", [StringType]).toString()
-  );
+  expect(val1Hint?.type).toBe("Option<number>");
+  expect(val2Hint?.type).toBe("Option<number>");
+  expect(val3Hint?.type).toBe("Option<string>");
 });
 
 test("should add None() for missing optional field in ADT constructor arg", () => {
@@ -181,15 +157,4 @@ let nameIsNone = match (u) {
   // Check compiled code for the LoggedIn call
   // It should look like: const u = LoggedIn({ age: 30, name: None() });
   expect(code).toContain("LoggedIn({ age: 30, name: None() })");
-});
-
-test("Options fields can be explicitly set to None", () => {
-  const { errors } = compile(`type User = {
-  id: number,
-  name?: string
-}
-
-const u: User = { id: 1, name: None }
-`);
-  expect(errors.length).toBe(0)
 });
