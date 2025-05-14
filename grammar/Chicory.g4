@@ -43,7 +43,7 @@ primaryTypeExpr
 adtType: NL* '|'? adtOption (NL* '|' adtOption )* NL*;
 
 adtOption
-    : IDENTIFIER '(' NL* '{' NL* adtTypeAnnotation (',' NL* adtTypeAnnotation) ','? NL* '}' NL* ')' #AdtOptionAnonymousRecord
+    : IDENTIFIER '(' NL* '{' NL* adtTypeAnnotation (',' NL* adtTypeAnnotation)? ','? NL* '}' NL* ')' #AdtOptionAnonymousRecord
     | IDENTIFIER '(' IDENTIFIER ')'                                                                 #AdtOptionNamedType
     | IDENTIFIER '(' primitiveType ')'                                                              #AdtOptionPrimitiveType
     | IDENTIFIER                                                                                    #AdtOptionNoArg
