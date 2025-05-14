@@ -8,6 +8,7 @@ stmt
     : assignStmt
     | typeDefinition
     | importStmt
+    | globalStmt
     | expr
     ;
 
@@ -77,6 +78,8 @@ importStmt
     | 'bind' bindingImportIdentifier 'from' STRING                          #BindStatement
     | 'bind' IDENTIFIER 'as' typeExpr ',' bindingImportIdentifier 'from' STRING #BindStatement
     ;
+
+globalStmt: 'global' IDENTIFIER 'as' typeExpr;
 
 destructuringImportIdentifier:
     | '{' NL* IDENTIFIER (',' NL* IDENTIFIER)* NL* '}'

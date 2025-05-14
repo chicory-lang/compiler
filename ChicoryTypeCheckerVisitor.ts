@@ -1235,6 +1235,8 @@ export class ChicoryTypeChecker {
       return this.visitTypeDefinition(ctx.typeDefinition()!);
     } else if (ctx.importStmt()) {
       return this.visitImportStmt(ctx.importStmt()!);
+    } else if (ctx.globalStmt()) {
+      return this.visitGlobalStmt(ctx.globalStmt()!);
     } else if (ctx.expr()) {
       return this.visitExpr(ctx.expr()!);
     }
@@ -2309,6 +2311,16 @@ export class ChicoryTypeChecker {
       }
     });
     return UnitType; // Export statement itself has no type
+  }
+
+  visitGlobalStmt(ctx: parser.GlobalStmtContext): ChicoryType {
+    // Global statements simply define the type of the identifier and compile that identifier 1:1
+    const id = ctx.IDENTIFIER()
+    const type = this.visitTypeExpr(ctx.typeExpr()!);
+    this.environment.declare(id.getText(), type, ctx, (str) =>
+      this.reportError(str, ctx)
+    );
+    return UnitType;
   }
 
   visitExpr(ctx: parser.ExprContext): ChicoryType {

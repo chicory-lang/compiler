@@ -90,6 +90,9 @@ export class ChicoryParserVisitor {
       resultJs = `${this.visitTypeDefinition(ctx.typeDefinition()!)}`;
     } else if (ctx.importStmt()) {
       resultJs = `${this.visitImportStmt(ctx.importStmt()!)};`;
+    } else if (ctx.globalStmt()) {
+      // We only need global statements to type check references to identifiers in the global scope
+      // The identifiers compile 1:1 so we don't need to do anything here
     } else if (ctx.expr()) {
       resultJs = `${this.visitExpr(ctx.expr()!)};`;
     } else {
