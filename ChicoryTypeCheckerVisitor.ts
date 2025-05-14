@@ -1661,42 +1661,40 @@ export class ChicoryTypeChecker {
     typeParams?: TypeVariable[] // For type definitions
   ): ChicoryType {
     // --- Check for simple IDENTIFIER first ---
-    // A few possibilities here, but one is a bare ADT
     if (ctx.IDENTIFIER()) {
       const name = ctx.IDENTIFIER()!.getText();
+      console.log(`[visitPrimaryTypeExpr] IDENTIFIER: '${name}', typeName: '${typeName}', typeParams: ${typeParams?.map(tp => tp.name)}, typeVarsInSig: ${typeVarsInSig ? Array.from(typeVarsInSig.keys()) : 'null'}`);
 
-      // Check signature vars FIRST
+      // Order of checks:
+      // 1. Is it a generic parameter of the current ADT/TypeAlias being defined? (typeParams)
+      //    (e.g., `T` in `type MyList<T> = ...`)
+      if (typeParams) {
+        const param = typeParams.find(p => p.name === name);
+        if (param) {
+          console.log(`  > Matched typeParam: ${param.toString()}`);
+          return param;
+        }
+      }
+
+      // 2. Is it a generic parameter of the current function signature being parsed? (typeVarsInSig)
+      //    (e.g., `T` in `(x: T) => T`)
       if (typeVarsInSig?.has(name)) {
-        return typeVarsInSig.get(name)!;
+        const sigVar = typeVarsInSig.get(name)!;
+        console.log(`  > Matched typeVarsInSig: ${sigVar.toString()}`);
+        return sigVar;
       }
 
-      // Check environment SECOND
-      const type = this.environment.getType(name);
-      if (name === "T")
-        console.log(
-          `[visitPrimaryTypeExpr] '${name}' not in typeVarsInSig. Checking environment. Found: ${type?.toString()}`
-        ); // Log env check specifically for T
-      if (type) {
-        console.log(`[visitPrimaryTypeExpr] Found '${name}' in environment.`);
-        return type;
+      // 3. Is it a defined type in the environment?
+      //    (e.g., `string`, `number`, `MyList` after `type MyList<T> = ...`)
+      const envType = this.environment.getType(name);
+      if (envType) {
+        console.log(`  > Matched environment type: ${envType.toString()}`);
+        return envType;
       }
 
-      // THIRD: If likely a signature var (uppercase) not yet seen
-      if (typeVarsInSig && name[0].toUpperCase() === name[0]) {
-        console.log(
-          `[visitPrimaryTypeExpr] Assuming '${name}' is a signature TypeVariable (not found yet).`
-        );
-        const typeVar = new TypeVariable(this.nextTypeVarId++, name);
-        typeVarsInSig.set(name, typeVar);
-        // Optionally declare in temp env? Maybe not needed if visitParameterType handles it.
-        return typeVar;
-      }
-
-      // LAST RESORT: Error
+      // 4. If none of the above, it's an undefined type identifier.
       this.reportError(`Type identifier '${name}' not found.`, ctx);
-      console.log(
-        `[visitPrimaryTypeExpr] Identifier '${name}' not found in typeVarsInSig or environment. Reporting error.`
-      );
+      console.log(`  > Not found. Reporting error.`);
       return UnknownType;
     }
     // --- Now check other complex types ---
@@ -1708,22 +1706,27 @@ export class ChicoryTypeChecker {
       const adtOptions = adtCtx.adtOption();
       if (adtOptions.length === 1 && adtOptions[0] instanceof parser.AdtOptionNoArgContext) {
           const identifierName = adtOptions[0].IDENTIFIER().getText();
-          console.log(`[visitPrimaryTypeExpr] Detected simple identifier '${identifierName}' parsed as adtType.`);
+          console.log(`[visitPrimaryTypeExpr] Detected simple identifier '${identifierName}' parsed as adtType. Resolving as IDENTIFIER.`);
+          // Resolve it as if it were a direct IDENTIFIER node.
+          // This re-uses the logic from the `if (ctx.IDENTIFIER())` block above.
+          // We need to be careful not to cause infinite recursion if IDENTIFIER() itself calls this.
+          // Instead, explicitly apply the same resolution logic here:
 
-          // Try resolving it like a regular identifier first (check sig vars, then env)
-          if (typeVarsInSig?.has(identifierName)) {
-              console.log(`  > Found '${identifierName}' in typeVarsInSig.`);
-              return typeVarsInSig.get(identifierName)!;
+          // 1. Check ADT/TypeAlias generic parameters (typeParams)
+          if (typeParams && typeParams.find(p => p.name === identifierName)) {
+            return typeParams.find(p => p.name === identifierName)!;
           }
+          // 2. Check function signature generic parameters (typeVarsInSig)
+          if (typeVarsInSig?.has(identifierName)) {
+            return typeVarsInSig.get(identifierName)!;
+          }
+          // 3. Check environment
           const envType = this.environment.getType(identifierName);
           if (envType) {
-              console.log(`  > Found '${identifierName}' in environment.`);
-              // Return the type found in the environment (e.g., the RecordType for User, or GenericType for Option)
-              return envType;
+            return envType;
           }
-          // If not found, it's an undefined type identifier.
-          this.reportError(`Type identifier '${identifierName}' not found.`, ctx);
-          console.log(`  > Identifier '${identifierName}' (parsed as ADT) not found in typeVarsInSig or environment. Reporting error.`);
+          // 4. Error
+          this.reportError(`Type identifier '${identifierName}' (parsed as ADT) not found.`, ctx);
           return UnknownType;
       }
       // --- End Check for Simple Identifier ---
@@ -1738,114 +1741,16 @@ export class ChicoryTypeChecker {
         typeVarsInSig // Pass signature variables if any
       );
     } else if (ctx.functionType()) {
-      return this.visitFunctionType(ctx.functionType()!); // Doesn't need typeParams
-    } else if (ctx.genericTypeExpr()) {
-      return this.visitGenericTypeExpr(ctx.genericTypeExpr()!, typeVarsInSig); // Doesn't need typeParams directly, handles its own args
-    } else if (ctx.recordType()) {
-      return this.visitRecordType(ctx.recordType()!, typeVarsInSig); // Doesn't need typeParams
-    } else if (ctx.tupleType()) {
-      return this.visitTupleType(ctx.tupleType()!, typeVarsInSig); // Doesn't need typeParams
-    } else if (ctx.primitiveType()) {
-      return this.getPrimitiveType(ctx.primitiveType()!);
-    } else if (ctx.IDENTIFIER()) {
-      // This is a generic if the "ADT" is not already declared
-      const maybeAdtOption = ctx.adtType()?.adtOption();
-      if (
-        maybeAdtOption?.length === 1 &&
-        maybeAdtOption[0] instanceof parser.AdtOptionNoArgContext
-      ) {
-        const possibleGeneric = maybeAdtOption[0].IDENTIFIER().getText();
-        if (typeVarsInSig?.has(possibleGeneric)) {
-          return typeVarsInSig.get(possibleGeneric)!;
-        }
-        const isInEnvironment = this.environment.getType(possibleGeneric);
-        if (!isInEnvironment) {
-          return new GenericType(this.nextTypeVarId++, possibleGeneric, []);
-        }
-      }
-      // Otherwise, it's an ADT
-      return this.visitAdtType(ctx.adtType()!, typeName);
-    } else if (ctx.functionType()) {
       return this.visitFunctionType(ctx.functionType()!);
     } else if (ctx.genericTypeExpr()) {
       return this.visitGenericTypeExpr(ctx.genericTypeExpr()!, typeVarsInSig);
     } else if (ctx.recordType()) {
-      return this.visitRecordType(ctx.recordType()!, typeVarsInSig);
+      // Pass typeParams down to visitRecordType
+      return this.visitRecordType(ctx.recordType()!, typeVarsInSig, typeParams);
     } else if (ctx.tupleType()) {
       return this.visitTupleType(ctx.tupleType()!, typeVarsInSig);
     } else if (ctx.primitiveType()) {
       return this.getPrimitiveType(ctx.primitiveType()!);
-    } else if (ctx.IDENTIFIER()) {
-      const name = ctx.IDENTIFIER()!.getText();
-      // --- Logging ---
-      if (name === "T") {
-        // Or adjust if the type var name might differ
-        console.log(`[visitPrimaryTypeExpr] Encountered IDENTIFIER '${name}'.`);
-        if (typeVarsInSig) {
-          console.log(
-            `  - typeVarsInSig provided. Keys: [${Array.from(
-              typeVarsInSig.keys()
-            ).join(", ")}]`
-          );
-          console.log(
-            `  - typeVarsInSig.has('${name}'): ${typeVarsInSig.has(name)}`
-          );
-          if (typeVarsInSig.has(name)) {
-            const tvis = typeVarsInSig.get(name);
-            console.log(
-              `  - Found in typeVarsInSig. Type: ${typeVarsInSig
-                .get(name)
-                ?.toString()} (Kind: ${
-                tvis && "kind" in tvis ? tvis.kind : "no kind"
-              })`
-            );
-          }
-        } else {
-          console.log(`  - typeVarsInSig is null/undefined.`);
-        }
-      }
-      // --- End Logging ---
-
-      if (typeVarsInSig?.has(name)) {
-        return typeVarsInSig.get(name)!;
-      }
-
-      const type = this.environment.getType(name);
-      if (name === "T") {
-        console.log(
-          `[visitPrimaryTypeExpr] '${name}' not in typeVarsInSig. Checking environment. Found: ${type?.toString()}`
-        ); // Log env check specifically for T
-      }
-
-      // Check environment SECOND
-      if (type) {
-        console.log(`[visitPrimaryTypeExpr] Found '${name}' in environment.`);
-        // If found in env, it's a concrete type (or already declared generic/ADT)
-        return type;
-      }
-
-      // THIRD: If we are likely parsing a type signature (typeVarsInSig exists)
-      // AND the identifier is uppercase, assume it's an intended type variable
-      // that might be defined later in the signature (e.g., return type uses a param var).
-      // This helps catch cases missed by visitParameterType.
-      if (typeVarsInSig && name[0].toUpperCase() === name[0]) {
-        console.log(
-          `[visitPrimaryTypeExpr] Assuming '${name}' is a signature TypeVariable (not found yet).`
-        );
-        const typeVar = new TypeVariable(this.nextTypeVarId++, name);
-        // Add it to the map now so it's found if referenced again in the same signature
-        typeVarsInSig.set(name, typeVar);
-        // Optionally declare in temp env too? Might be redundant if visitParameterType handles it.
-        // this.environment.declare(name, typeVar, ctx, ...);
-        return typeVar;
-      }
-
-      // LAST RESORT: Undefined type. Report error and return Unknown.
-      this.reportError(`Type identifier '${name}' not found.`, ctx);
-      console.log(
-        `[visitPrimaryTypeExpr] Identifier '${name}' not found in typeVarsInSig or environment. Reporting error.`
-      );
-      return UnknownType; // Changed from GenericType fallback
     } else if (ctx.typeExpr()) {
       // For '(' typeExpr ')'
       // Pass typeParams when visiting nested types
@@ -1978,14 +1883,19 @@ export class ChicoryTypeChecker {
 
   private visitRecordType(
     ctx: parser.RecordTypeContext,
-    typeVarsInSig?: Map<string, TypeVariable> // Added map
+    typeVarsInSig?: Map<string, TypeVariable>, // For function signatures
+    typeParams?: TypeVariable[] // For type definitions (e.g., T in MyList<T>)
   ): ChicoryType {
     const recordType = new RecordType(new Map());
     ctx.recordTypeAnnotation().forEach((kv) => {
-      const id = kv.IDENTIFIER()[0].getText();
-      let fieldType: ChicoryType; // Renamed from 'val'
+      const id = kv.IDENTIFIER()[0].getText(); // Field name
       const isOptional = kv.QUESTION() !== null; // Check if '?' is present
 
+      let fieldType: ChicoryType;
+      // Resolve the field's type by visiting its TypeExprContext.
+      // This leverages visitPrimaryTypeExpr's error reporting for undefined identifiers.
+      // Pass both typeVarsInSig (for function contexts) and typeParams (for type definition contexts).
+      // Here are the possible kinds of expressions: (primitiveType | recordType | IDENTIFIER | tupleType | functionType | genericTypeExpr)
       // Pass map down when resolving field types
       if (kv.primitiveType()) {
         fieldType = this.getPrimitiveType(kv.primitiveType()!);
@@ -2005,7 +1915,11 @@ export class ChicoryTypeChecker {
         fieldType =
           typeVarsInSig?.get(rhs) ||
           this.environment.getType(rhs) ||
-          new GenericType(this.nextTypeVarId++, rhs, []); // Fallback placeholder
+          typeParams?.find((p) => p.name === rhs) ||
+          UnknownType;
+        if (fieldType === UnknownType) {
+          this.reportError(`Type '${rhs}' not found.`, kv);
+        }
       } else {
         this.reportError(`Unknown record type annotation: ${kv.getText()}`, kv);
         fieldType = UnknownType;
@@ -2043,11 +1957,40 @@ export class ChicoryTypeChecker {
 
           if (annotation.primitiveType()) {
             fieldType = this.getPrimitiveType(annotation.primitiveType()!);
-          } else if (annotation.IDENTIFIER()[1]) {
-            const typeName = annotation.IDENTIFIER()[1].getText();
-            fieldType =
-              this.environment.getType(typeName) ||
-              (typeVarsInSig?.get(typeName) ?? new GenericType(this.nextTypeVarId++, typeName, []));
+          } else if (annotation.IDENTIFIER().length > 1) { // Field name is IDENTIFIER[0], type is IDENTIFIER[1]
+            const typeIdentifierNode = annotation.IDENTIFIER()[1];
+            const typeName = typeIdentifierNode.getText();
+            let resolvedType: ChicoryType | undefined;
+
+            // 1. Check ADT's own generic parameters
+            if (typeParams) {
+              resolvedType = typeParams.find(p => p.name === typeName);
+            }
+
+            // 2. Check function signature generic parameters (if ADT is defined in such a scope)
+            if (!resolvedType && typeVarsInSig) {
+              resolvedType = typeVarsInSig.get(typeName);
+            }
+
+            // 3. Check environment
+            if (!resolvedType) {
+              resolvedType = this.environment.getType(typeName);
+            }
+
+            if (resolvedType) {
+              fieldType = resolvedType;
+            } else {
+              this.reportError(`Type identifier '${typeName}' for ADT field '${annotation.IDENTIFIER()[0].getText()}' not found.`, ctx);
+              fieldType = UnknownType;
+            }
+          } else {
+            // This case should ideally not be hit if grammar for AdtTypeAnnotation is correctly parsed
+            // or if it's not an IDENTIFIER type. Could be another typeExpr.
+            // For now, if it's not primitive and not a clear IDENTIFIER type, report error or handle other typeExprs.
+            // This part might need more robust handling if AdtTypeAnnotation can be complex typeExpr.
+            // Assuming AdtTypeAnnotation's IDENTIFIER rule implies the type is an identifier.
+            this.reportError(`Invalid type in ADT constructor field '${fieldName}'. Expected primitive or type identifier.`, annotation);
+            fieldType = UnknownType;
           }
 
           // Wrap the fieldType in a RecordField object (implicitly required)

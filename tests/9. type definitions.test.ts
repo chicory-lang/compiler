@@ -37,3 +37,12 @@ const ValueB = (value) => { return { type: "ValueB", value }; };
 const ValueC = (value) => { return { type: "ValueC", value }; };
 const ValueD = () => { return { type: "ValueD" }; };`);
 });
+
+test("Should produce error if non-existent type is used in definition", () => {
+  const { errors } = compile(`type MyAdt = {
+  x: number,
+  y: string,
+  z: SomeType,
+}`);
+  expect(errors.length).toBe(1);
+});
