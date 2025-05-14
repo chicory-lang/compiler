@@ -1,6 +1,5 @@
 import { expect, test } from "bun:test";
 import compile from "../compile"; // Adjust path as needed
-import { StringType, NumberType, RecordType, JsxElementType, RecordField } from "../ChicoryTypes"; // Adjust path
 
 test("should parse a simple self-closing JSX element", () => {
   const chicoryCode = `
