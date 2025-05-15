@@ -46,3 +46,19 @@ test("Should produce error if non-existent type is used in definition", () => {
 }`);
   expect(errors.length).toBe(1);
 });
+
+test("Should allow literal union types", () => {
+  const {code,errors} = compile(`type inputKind = "text" | "button"
+    const a: inputKind = "button"
+    const b: inputKind = "text"
+    const c = "invalid"
+  `)
+  expect(errors.length).toBe(0);
+})
+
+test("Should produce errors for invalid literal union types", () => {
+  const {code,errors} = compile(`type inputKind = "text" | "button"
+    const c: inputKind = "invalid"
+  `)
+  expect(errors.length).toBe(0);
+})

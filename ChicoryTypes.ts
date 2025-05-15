@@ -133,6 +133,22 @@ export class TypeVariable implements ChicoryType {
   }
 }
 
+// String Literal Type
+export class StringLiteralType implements ChicoryType {
+  constructor(public value: string) {}
+  toString() {
+    return `"${this.value}"`; // Represent as "value"
+  }
+}
+
+// Literal Union Type
+export class LiteralUnionType implements ChicoryType {
+  constructor(public values: Set<string>) {} // Store the actual string values
+  toString() {
+    return Array.from(this.values).map(v => `"${v}"`).join(" | ");
+  }
+}
+
 // JSX Element Type
 export class JsxElementType implements ChicoryType {
   // Represents the result of a JSX expression, holding the type of its expected props.
@@ -232,12 +248,24 @@ export function typesAreEqual(type1: ChicoryType, type2: ChicoryType): boolean {
     }
     return true;
   } else if (type1 instanceof TypeVariable && type2 instanceof TypeVariable) {
-    return type1.name === type2.name;
+    return type1.id === type2.id; // Compare by ID for uniqueness
   } else if (type1 instanceof JsxElementType && type2 instanceof JsxElementType) {
     // Two JsxElement types are equal if their expected props types are equal
     return typesAreEqual(type1.propsType, type2.propsType);
+  } else if (type1 instanceof StringLiteralType && type2 instanceof StringLiteralType) {
+    return type1.value === type2.value;
+  } else if (type1 instanceof LiteralUnionType && type2 instanceof LiteralUnionType) {
+    if (type1.values.size !== type2.values.size) {
+      return false;
+    }
+    for (const val of type1.values) {
+      if (!type2.values.has(val)) {
+        return false;
+      }
+    }
+    return true;
   }
-
+  // Cross-type comparisons (e.g., StringLiteralType vs LiteralUnionType) are handled by unification, not equality.
   return false;
 }
 

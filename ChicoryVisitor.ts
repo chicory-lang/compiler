@@ -748,7 +748,7 @@ export class ChicoryParserVisitor {
   }
 
   visitJsxAttribute(ctx: parser.JsxAttributeContext): string {
-    const name = ctx.IDENTIFIER().getText();
+    const name = ctx.IDENTIFIER()?.getText() || "type"
     const value = ctx.jsxAttributeValue()
       ? this.visitJsxAttributeValue(ctx.jsxAttributeValue())
       : "";

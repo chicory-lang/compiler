@@ -36,8 +36,19 @@ primaryTypeExpr
     | primitiveType
     | functionType
     | genericTypeExpr
+    | literalUnionType      // Added
     | IDENTIFIER
     | '(' typeExpr ')'
+    ;
+
+// String literal as a type, e.g., "admin"
+stringLiteralType
+    : STRING
+    ;
+
+// Union of string literal types, e.g., "user" | "admin"
+literalUnionType
+    : stringLiteralType (NL* '|' NL* stringLiteralType)*
     ;
 
 adtType: NL* '|'? adtOption (NL* '|' adtOption )* NL*;
@@ -219,7 +230,8 @@ jsxAttributes
     ;
 
 jsxAttribute
-    : (IDENTIFIER | 'type') '=' jsxAttributeValue
+    : 'type' '=' jsxAttributeValue
+    | IDENTIFIER '=' jsxAttributeValue
     ;
 
 jsxAttributeValue

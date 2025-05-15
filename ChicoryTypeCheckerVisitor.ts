@@ -21,6 +21,8 @@ import {
   RecordField,
   JsxElementType,
   DisplayTypeAdt,
+  StringLiteralType,
+  LiteralUnionType,
 } from "./ChicoryTypes";
 import { TypeEnvironment } from "./TypeEnvironment";
 import {
@@ -208,24 +210,19 @@ export class ChicoryTypeChecker {
       console.log("[initializeJsxIntrinsics] Initializing...");
 
       // --- Define Style Record Type ---
-      // Define a basic type for the 'style' object. Properties are optional strings/numbers.
       const styleRecordType = new RecordType(new Map<string, RecordField>([
-          // Add common CSS properties here. All should be optional.
-          ['color',        { type: StringType, optional: true }], // color?: string
-          ['backgroundColor', { type: StringType, optional: true }], // backgroundColor?: string
-          ['fontSize',     { type: StringType, optional: true }], // fontSize?: string (e.g., "16px", "1.2em") - could also allow number
-          ['margin',       { type: StringType, optional: true }], // margin?: string
-          ['padding',      { type: StringType, optional: true }], // padding?: string
-          ['width',        { type: StringType, optional: true }], // width?: string
-          ['height',       { type: StringType, optional: true }], // height?: string
-          ['display',      { type: DisplayTypeAdt, optional: true }], // display?: DisplayType
+          ['color',        { type: StringType, optional: true }],
+          ['backgroundColor', { type: StringType, optional: true }],
+          ['fontSize',     { type: StringType, optional: true }],
+          ['margin',       { type: StringType, optional: true }],
+          ['padding',      { type: StringType, optional: true }],
+          ['width',        { type: StringType, optional: true }],
+          ['height',       { type: StringType, optional: true }],
+          ['display',      { type: DisplayTypeAdt, optional: true }],
           // ... add more as needed
       ]));
       console.log(`[initializeJsxIntrinsics] styleRecordType defined: ${styleRecordType.toString()}`);
-      // --- End Style Record Type ---
-
-      // Define common HTML attributes as a RecordType
-      // Using '?' for optional attributes (Rescript style)
+      
       const domElement = new RecordType(new Map<string, RecordField>([
           ['value', { type: StringType, optional: true }],
       ]));
@@ -235,26 +232,29 @@ export class ChicoryTypeChecker {
       ]))
 
       const commonHtmlAttributes = new Map<string, RecordField>([
-        ['class', { type: StringType, optional: true }],
-        ['id',    { type: StringType, optional: true }],
-        ['style', { type: styleRecordType, optional: true }],
+        ['class',   { type: StringType, optional: true }],
+        ['id',      { type: StringType, optional: true }],
+        ['style',   { type: styleRecordType, optional: true }],
         ['onClick', { type: new FunctionType([commonDomEvent], UnitType, "onClick"), optional: true }],
       ])
 
       const commonHtmlFormAttributes = new Map<string, RecordField>([
-        ['name', { type: StringType, optional: false }],
+        ['name',     { type: StringType, optional: true }],
         ['onChange', { type: new FunctionType([commonDomEvent], UnitType, "onChange"), optional: true }],
-        ['onInput', { type: new FunctionType([commonDomEvent], UnitType, "onChange"), optional: true }],
-        ['value', { type: StringType, optional: false }],
-        ['required', { type: BooleanType, optional: false }],
+        ['onInput',  { type: new FunctionType([commonDomEvent], UnitType, "onChange"), optional: true }],
+        ['value',    { type: StringType, optional: true }],
+        ['required', { type: BooleanType, optional: true }],
       ])
       
       const defaultHtmlAttributes = new RecordType(commonHtmlAttributes)
       const inputHtmlAttributes = new RecordType(new Map<string, RecordField>([
           ...commonHtmlAttributes,
           ...commonHtmlFormAttributes,
-          // constrain to "text", "email", "password", "button"
-          ['type', { type: StringType, optional: false }],
+          ['type', { type: new LiteralUnionType(new Set([
+            "button", "checkbox", "color", "date", "datetime-local", "email", "file", 
+            "hidden", "image", "month", "number", "password", "radio", "range", 
+            "reset", "search", "submit", "tel", "text", "time", "url", "week"
+          ])), optional: false }],
       ]));
 
       const formHtmlAttributes = new RecordType(new Map<string, RecordField>([
@@ -264,8 +264,6 @@ export class ChicoryTypeChecker {
       ]));
       console.log(`[initializeJsxIntrinsics] commonHtmlAttributes defined: ${commonHtmlAttributes.toString()}`);
 
-      // Declare intrinsic elements in the environment
-      // The "type" associated with the tag name is a JsxElementType containing the RecordType of its expected attributes.
       const divType = new JsxElementType(defaultHtmlAttributes);
       console.log(`[initializeJsxIntrinsics] Declaring 'div' with type: ${divType.toString()}`);
       this.environment.declare('div', divType, null, (err) => console.error("JSX Intrinsic Error (div):", err));
@@ -289,13 +287,8 @@ export class ChicoryTypeChecker {
       this.environment.declare('button', formElement, null, (err) => console.error("JSX Intrinsic Error (input):", err));
       this.environment.declare('textarea', formElement, null, (err) => console.error("JSX Intrinsic Error (input):", err));
       
-
-      // Ensure Option is required if explicitly used in attributes (like the data-custom example above)
-      // this.prelude.requireOptionType();
       console.log("[initializeJsxIntrinsics] Initialization complete.");
   }
-  // --- END: JSX Intrinsic Initialization ---
-
 
   private newTypeVar(name: string = `T${this.nextTypeVarId}`): TypeVariable {
     const id = this.nextTypeVarId++;
@@ -767,6 +760,88 @@ export class ChicoryTypeChecker {
     }
     // --- End JsxElementType Unification ---
 
+    // --- StringLiteralType and LiteralUnionType Unification ---
+    // Case 1: StringLiteral vs StringLiteral
+    if (type1 instanceof StringLiteralType && type2 instanceof StringLiteralType) {
+      if (type1.value === type2.value) {
+        console.log(`[unify] SUCCESS: StringLiteralTypes are equal ("${type1.value}")`);
+        console.log(`[unify] EXIT`);
+        return type1;
+      } else {
+        const error = new Error(`Cannot unify string literal "${type1.value}" with "${type2.value}"`);
+        console.error(`[unify] ERROR: ${error.message}`);
+        console.log(`[unify] EXIT (error)`);
+        return error;
+      }
+    }
+
+    // Case 2: LiteralUnion vs LiteralUnion
+    if (type1 instanceof LiteralUnionType && type2 instanceof LiteralUnionType) {
+      // For unification, we find the intersection. If intersection is empty, it's an error.
+      const intersection = new Set<string>();
+      for (const val of type1.values) {
+        if (type2.values.has(val)) {
+          intersection.add(val);
+        }
+      }
+      if (intersection.size === 0) {
+        const error = new Error(`Cannot unify literal unions ${type1} and ${type2} as they are disjoint.`);
+        console.error(`[unify] ERROR: ${error.message}`);
+        console.log(`[unify] EXIT (error)`);
+        return error;
+      }
+      const resultType = intersection.size === 1 
+        ? new StringLiteralType(Array.from(intersection)[0]) 
+        : new LiteralUnionType(intersection);
+      console.log(`[unify] SUCCESS: Unified LiteralUnionTypes to ${resultType}`);
+      console.log(`[unify] EXIT`);
+      return resultType;
+    }
+
+    // Case 3: StringLiteral vs LiteralUnion
+    if (type1 instanceof StringLiteralType && type2 instanceof LiteralUnionType) {
+      if (type2.values.has(type1.value)) {
+        console.log(`[unify] SUCCESS: StringLiteral "${type1.value}" is part of LiteralUnion ${type2}. Result: ${type1}`);
+        console.log(`[unify] EXIT`);
+        return type1; // The specific literal is the result
+      } else {
+        const error = new Error(`String literal "${type1.value}" is not a member of literal union ${type2}`);
+        console.error(`[unify] ERROR: ${error.message}`);
+        console.log(`[unify] EXIT (error)`);
+        return error;
+      }
+    }
+    if (type1 instanceof LiteralUnionType && type2 instanceof StringLiteralType) {
+      // Symmetric to above
+      console.log(`[unify] BRANCH: Swapping LiteralUnionType and StringLiteralType and recursing.`);
+      console.log(`[unify] EXIT (recursive swap)`);
+      return this.unify(type2, type1, substitution);
+    }
+
+    // Case 4: StringLiteral vs StringType
+    if (type1 instanceof StringLiteralType && type2 === StringType) {
+      console.log(`[unify] SUCCESS: StringLiteral "${type1.value}" unifies with StringType. Result: ${type1}`);
+      console.log(`[unify] EXIT`);
+      return type1; // String literal is more specific
+    }
+    if (type1 === StringType && type2 instanceof StringLiteralType) {
+      console.log(`[unify] BRANCH: Swapping StringType and StringLiteralType and recursing.`);
+      console.log(`[unify] EXIT (recursive swap)`);
+      return this.unify(type2, type1, substitution);
+    }
+
+    // Case 5: LiteralUnion vs StringType
+    if (type1 instanceof LiteralUnionType && type2 === StringType) {
+      console.log(`[unify] SUCCESS: LiteralUnion ${type1} unifies with StringType. Result: ${type1}`);
+      console.log(`[unify] EXIT`);
+      return type1; // Literal union is more specific
+    }
+    if (type1 === StringType && type2 instanceof LiteralUnionType) {
+      console.log(`[unify] BRANCH: Swapping StringType and LiteralUnionType and recursing.`);
+      console.log(`[unify] EXIT (recursive swap)`);
+      return this.unify(type2, type1, substitution);
+    }
+    // --- End StringLiteralType and LiteralUnionType Unification ---
 
     // Add other type-specific unification rules (RecordType etc.) as needed
     const finalError = new Error(`Cannot unify ${type1} with ${type2}`);
@@ -1006,12 +1081,17 @@ export class ChicoryTypeChecker {
       // Type vars might appear within the types of its *constructors*, but we handle that
       // when unifying function types (constructor types). So an ADT doesn't "contain"
       // the type var in the sense of the `occursIn` check.
-      return false;
+      return type.typeParameters.some(p => this.occursIn(typeVar, p)); // Check type parameters of ADT definition
     }
 
     // Check within JsxElement's propsType
     if (type instanceof JsxElementType) {
         return this.occursIn(typeVar, type.propsType);
+    }
+
+    // StringLiteralType and LiteralUnionType do not contain type variables
+    if (type instanceof StringLiteralType || type instanceof LiteralUnionType) {
+      return false;
     }
 
     // Primitives and UnknownType don't contain type vars
@@ -1746,26 +1826,26 @@ export class ChicoryTypeChecker {
           const identifierName = adtOptions[0].IDENTIFIER().getText();
           console.log(`[visitPrimaryTypeExpr] Detected simple identifier '${identifierName}' parsed as adtType. Resolving as IDENTIFIER.`);
           // Resolve it as if it were a direct IDENTIFIER node.
-          // This re-uses the logic from the `if (ctx.IDENTIFIER())` block above.
-          // We need to be careful not to cause infinite recursion if IDENTIFIER() itself calls this.
-          // Instead, explicitly apply the same resolution logic here:
+              // This re-uses the logic from the `if (ctx.IDENTIFIER())` block above.
+              // We need to be careful not to cause infinite recursion if IDENTIFIER() itself calls this.
+              // Instead, explicitly apply the same resolution logic here:
 
-          // 1. Check ADT/TypeAlias generic parameters (typeParams)
-          if (typeParams && typeParams.find(p => p.name === identifierName)) {
-            return typeParams.find(p => p.name === identifierName)!;
-          }
-          // 2. Check function signature generic parameters (typeVarsInSig)
-          if (typeVarsInSig?.has(identifierName)) {
-            return typeVarsInSig.get(identifierName)!;
-          }
-          // 3. Check environment
-          const envType = this.environment.getType(identifierName);
-          if (envType) {
-            return envType;
-          }
-          // 4. Error
-          this.reportError(`Type identifier '${identifierName}' (parsed as ADT) not found.`, ctx);
-          return UnknownType;
+              // 1. Check ADT/TypeAlias generic parameters (typeParams)
+              if (typeParams && typeParams.find(p => p.name === identifierName)) {
+                return typeParams.find(p => p.name === identifierName)!;
+              }
+              // 2. Check function signature generic parameters (typeVarsInSig)
+              if (typeVarsInSig?.has(identifierName)) {
+                return typeVarsInSig.get(identifierName)!;
+              }
+              // 3. Check environment
+              const envType = this.environment.getType(identifierName);
+              if (envType) {
+                return envType;
+              }
+              // 4. Error
+              this.reportError(`Type identifier '${identifierName}' (parsed as ADT) not found.`, ctx);
+              return UnknownType;
       }
       // --- End Check for Simple Identifier ---
 
@@ -1778,6 +1858,8 @@ export class ChicoryTypeChecker {
         typeParams, // Pass the outer type parameters
         typeVarsInSig // Pass signature variables if any
       );
+    } else if (ctx.literalUnionType()) { // Added before functionType
+        return this.visitLiteralUnionType(ctx.literalUnionType()!, typeName, typeVarsInSig, typeParams);
     } else if (ctx.functionType()) {
       return this.visitFunctionType(ctx.functionType()!);
     } else if (ctx.genericTypeExpr()) {
@@ -1917,6 +1999,31 @@ export class ChicoryTypeChecker {
     }
 
     throw new Error(`Unknown parameter type: ${ctx.getText()}`);
+  }
+
+  private visitStringLiteralType(ctx: parser.StringLiteralTypeContext): StringLiteralType {
+    const literalValueWithQuotes = ctx.STRING().getText();
+    const literalValue = literalValueWithQuotes.substring(1, literalValueWithQuotes.length - 1);
+    return new StringLiteralType(literalValue);
+  }
+
+  private visitLiteralUnionType(
+    ctx: parser.LiteralUnionTypeContext,
+    typeName?: string,
+    typeVarsInSig?: Map<string, TypeVariable>,
+    typeParams?: TypeVariable[]
+  ): ChicoryType {
+    const literalValues = new Set<string>();
+    ctx.stringLiteralType().forEach(sltCtx => {
+      const strLiteralType = this.visitStringLiteralType(sltCtx);
+      literalValues.add(strLiteralType.value);
+    });
+
+    if (literalValues.size === 1) {
+      // If only one literal, it's just a StringLiteralType
+      return new StringLiteralType(Array.from(literalValues)[0]);
+    }
+    return new LiteralUnionType(literalValues);
   }
 
   private visitRecordType(
@@ -4797,7 +4904,7 @@ export class ChicoryTypeChecker {
     } else {
       // Iterate through provided attributes
       for (const attrCtx of attributesCtx.jsxAttribute()) {
-        const attrName = attrCtx.getText()
+        const attrName = attrCtx.IDENTIFIER()?.getText() || "type"
         providedAttributeNames.add(attrName);
         console.log(`  > Checking provided attribute: '${attrName}'`);
 
@@ -4820,21 +4927,31 @@ export class ChicoryTypeChecker {
         const valueCtx = attrCtx.jsxAttributeValue();
         if (!valueCtx) {
           // Boolean shorthand attribute (e.g., <input disabled />)
-          // Check if the expected type is boolean?
           if (expectedInnerType === BooleanType && isOptional) {
              providedValueType = BooleanType; // Implicitly true
              console.log(`    > Boolean shorthand attribute '${attrName}' detected. Type: boolean (true)`);
-          } else {
+          } else if (expectedInnerType instanceof LiteralUnionType && expectedInnerType.values.has(attrName) && isOptional) {
+            // E.g. <button type="button" disabled /> where disabled is `disabled?: "disabled" | "true" | "false"`
+            // This is a bit of a stretch, typically boolean shorthand implies boolean true.
+            // For now, let's stick to boolean shorthand for boolean types.
+            // If we want to support `disabled` as `disabled="disabled"`, it needs a value.
+            this.reportError(`Attribute '${attrName}' is missing a value. Boolean shorthand is primarily for boolean attributes. Expected type: ${expectedInnerType}`, attrCtx);
+            providedValueType = UnknownType;
+          }
+          else {
              this.reportError(`Attribute '${attrName}' is missing a value. Boolean shorthand is only allowed for optional boolean attributes (e.g., 'prop?: boolean'). Expected type: ${expectedInnerType}`, attrCtx);
              providedValueType = UnknownType;
           }
         } else {
-          // Attribute has a value (e.g., class="hi", count={1})
+          // Attribute has a value (e.g., class="hi", count={1}, type="button")
           if (valueCtx.expr()) {
             // Value is an expression { ... }
             providedValueType = this.visitExpr(valueCtx.expr()!);
           } else if (valueCtx.STRING()) {
-            providedValueType = StringType;
+            // Direct string literal in JSX attribute, e.g. type="button"
+            // For type checking against LiteralUnionType, we need the actual value.
+            // The general type is StringType, but we'll do a special check later.
+            providedValueType = StringType; 
           } else if (valueCtx.NUMBER()) {
             providedValueType = NumberType;
           } else {
@@ -4872,7 +4989,21 @@ export class ChicoryTypeChecker {
 
         // --- Custom Check for Record Attributes (like style) ---
         let attributeCheckError: Error | null = null;
-        if (expectedInnerType instanceof RecordType && substitutedValueType instanceof RecordType) {
+
+        // --- Special Check for LiteralUnionType expected from JSX String Literal ---
+        if (expectedInnerType instanceof LiteralUnionType && valueCtx && valueCtx.STRING()) {
+            const jsxStringLiteralValueWithQuotes = valueCtx.STRING()!.getText();
+            const jsxStringLiteralValue = jsxStringLiteralValueWithQuotes.substring(1, jsxStringLiteralValueWithQuotes.length - 1);
+            console.log(`    > JSX attribute '${attrName}' is string literal "${jsxStringLiteralValue}", expected LiteralUnion ${expectedInnerType}.`);
+            if (!expectedInnerType.values.has(jsxStringLiteralValue)) {
+                attributeCheckError = new Error(`String literal "${jsxStringLiteralValue}" for attribute '${attrName}' is not a member of the expected literal union: ${expectedInnerType}.`);
+            } else {
+                console.log(`    > JSX string literal "${jsxStringLiteralValue}" matches expected LiteralUnion.`);
+                // Match is good, no further unification needed for this specific case.
+            }
+        }
+        // --- End Special Check ---
+        else if (expectedInnerType instanceof RecordType && substitutedValueType instanceof RecordType) {
             console.log(`    > Performing custom record check for attribute '${attrName}'.`);
             const expectedFields = expectedInnerType.fields;
             const providedFields = substitutedValueType.fields;
