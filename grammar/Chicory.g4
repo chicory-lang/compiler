@@ -219,7 +219,7 @@ jsxAttributes
     ;
 
 jsxAttribute
-    : IDENTIFIER '=' jsxAttributeValue
+    : (IDENTIFIER | 'type') '=' jsxAttributeValue
     ;
 
 jsxAttributeValue

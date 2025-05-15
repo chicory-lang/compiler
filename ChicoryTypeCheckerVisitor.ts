@@ -226,31 +226,69 @@ export class ChicoryTypeChecker {
 
       // Define common HTML attributes as a RecordType
       // Using '?' for optional attributes (Rescript style)
-      const commonHtmlAttributes = new RecordType(new Map<string, RecordField>([
-          ['class', { type: StringType, optional: true }], // class?: string
-          ['id',    { type: StringType, optional: true }], // id?: string
-          ['style', { type: styleRecordType, optional: true }], // style?: { color?: string, ... }
+      const domElement = new RecordType(new Map<string, RecordField>([
+          ['value', { type: StringType, optional: true }],
+      ]));
+
+      const commonDomEvent = new RecordType(new Map<string, RecordField>([
+          ['target', { type: domElement, optional: false }],
+      ]))
+
+      const commonHtmlAttributes = new Map<string, RecordField>([
+        ['class', { type: StringType, optional: true }],
+        ['id',    { type: StringType, optional: true }],
+        ['style', { type: styleRecordType, optional: true }],
+        ['onClick', { type: new FunctionType([commonDomEvent], UnitType, "onClick"), optional: true }],
+      ])
+
+      const commonHtmlFormAttributes = new Map<string, RecordField>([
+        ['name', { type: StringType, optional: false }],
+        ['onChange', { type: new FunctionType([commonDomEvent], UnitType, "onChange"), optional: true }],
+        ['onInput', { type: new FunctionType([commonDomEvent], UnitType, "onChange"), optional: true }],
+        ['value', { type: StringType, optional: false }],
+        ['required', { type: BooleanType, optional: false }],
+      ])
+      
+      const defaultHtmlAttributes = new RecordType(commonHtmlAttributes)
+      const inputHtmlAttributes = new RecordType(new Map<string, RecordField>([
+          ...commonHtmlAttributes,
+          ...commonHtmlFormAttributes,
+          // constrain to "text", "email", "password", "button"
+          ['type', { type: StringType, optional: false }],
+      ]));
+
+      const formHtmlAttributes = new RecordType(new Map<string, RecordField>([
+          ...commonHtmlAttributes,
+          ...commonHtmlFormAttributes,
           // Add other common attributes like title?, etc. as needed
       ]));
       console.log(`[initializeJsxIntrinsics] commonHtmlAttributes defined: ${commonHtmlAttributes.toString()}`);
 
       // Declare intrinsic elements in the environment
       // The "type" associated with the tag name is a JsxElementType containing the RecordType of its expected attributes.
-      const divType = new JsxElementType(commonHtmlAttributes);
+      const divType = new JsxElementType(defaultHtmlAttributes);
       console.log(`[initializeJsxIntrinsics] Declaring 'div' with type: ${divType.toString()}`);
       this.environment.declare('div', divType, null, (err) => console.error("JSX Intrinsic Error (div):", err));
 
-      const spanType = new JsxElementType(commonHtmlAttributes);
+      const spanType = new JsxElementType(defaultHtmlAttributes);
       console.log(`[initializeJsxIntrinsics] Declaring 'span' with type: ${spanType.toString()}`);
       this.environment.declare('span', spanType, null, (err) => console.error("JSX Intrinsic Error (span):", err));
 
-      const pType = new JsxElementType(commonHtmlAttributes);
+      const pType = new JsxElementType(defaultHtmlAttributes);
       console.log(`[initializeJsxIntrinsics] Declaring 'p' with type: ${pType.toString()}`);
       this.environment.declare('p', pType, null, (err) => console.error("JSX Intrinsic Error (p):", err));
 
-      const h1Type = new JsxElementType(commonHtmlAttributes);
+      const h1Type = new JsxElementType(defaultHtmlAttributes);
       console.log(`[initializeJsxIntrinsics] Declaring 'h1' with type: ${h1Type.toString()}`);
       this.environment.declare('h1', h1Type, null, (err) => console.error("JSX Intrinsic Error (h1):", err));
+
+      const inputType = new JsxElementType(inputHtmlAttributes);
+      const formElement = new JsxElementType(formHtmlAttributes)
+      console.log(`[initializeJsxIntrinsics] Declaring 'input' with type: ${inputType.toString()}`);
+      this.environment.declare('input', inputType, null, (err) => console.error("JSX Intrinsic Error (input):", err));
+      this.environment.declare('button', formElement, null, (err) => console.error("JSX Intrinsic Error (input):", err));
+      this.environment.declare('textarea', formElement, null, (err) => console.error("JSX Intrinsic Error (input):", err));
+      
 
       // Ensure Option is required if explicitly used in attributes (like the data-custom example above)
       // this.prelude.requireOptionType();
@@ -4759,7 +4797,7 @@ export class ChicoryTypeChecker {
     } else {
       // Iterate through provided attributes
       for (const attrCtx of attributesCtx.jsxAttribute()) {
-        const attrName = attrCtx.IDENTIFIER().getText();
+        const attrName = attrCtx.getText()
         providedAttributeNames.add(attrName);
         console.log(`  > Checking provided attribute: '${attrName}'`);
 
