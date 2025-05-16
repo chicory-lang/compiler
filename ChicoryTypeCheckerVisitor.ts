@@ -202,11 +202,11 @@ export class ChicoryTypeChecker {
         identifier: string,
         type: ChicoryType,
         context: ParserRuleContext | null,
-        pushError: (str: string) => void
+        errorMessage
       ) => {
         // Prefix the tag name
         const jsxIntrinsicName = JSX_INTRINSIC_PREFIX + identifier;
-        originalDeclare(jsxIntrinsicName, type, context, pushError);
+        originalDeclare(jsxIntrinsicName, type, context, (err) => console.error(errorMessage,err));
       };
 
       declareJsxTypes(jsxDeclare, {
@@ -621,21 +621,35 @@ export class ChicoryTypeChecker {
         }
       }
       console.log(`  > Recursively unifying return types`);
-      const returnResult = this.unify(
-        type1.returnType,
-        type2.returnType,
-        substitution
-      );
+      let returnResult: ChicoryType | Error;
+      if (type1.returnType === UnitType) {
+        // If the expected return type is UnitType (void), any actual return type is acceptable.
+        // The unification of return types is considered successful.
+        // We use type1.returnType (UnitType) as the "result" for this step,
+        // signifying compatibility without error.
+        console.log(`  > Expected return is UnitType. Allowing actual return type '${type2.returnType.toString()}'. Compatibility success.`);
+        returnResult = type1.returnType; 
+      } else {
+        // Standard unification for non-void expected return types.
+        returnResult = this.unify(
+          type1.returnType,
+          type2.returnType,
+          substitution // `substitution` contains bindings from param unification
+        );
+      }
+
       if (returnResult instanceof Error) {
         console.error(
           `[unify] ERROR: Failed unifying function return type: ${returnResult.message}`
         );
         console.log(`[unify] EXIT (error)`);
-        return returnResult;
+        return returnResult; // Propagate the error if actual unification failed (for non-void expected returns)
       }
       // Pass empty visited set
-      const unifiedType = this.applySubstitution(type1, substitution, new Set()); // Re-apply subs to get final func type
-      console.log(`[unify] SUCCESS: Unified FunctionType ${unifiedType}`);
+      // The overall unified function type is based on type1 (the expected type),
+      // with its type variables substituted according to the unification.
+      const unifiedType = this.applySubstitution(type1, substitution, new Set()); 
+      console.log(`[unify] SUCCESS: Unified FunctionType ${unifiedType.toString()}`);
       console.log(`[unify] EXIT`);
       return unifiedType;
     }
@@ -3589,13 +3603,22 @@ export class ChicoryTypeChecker {
 
     const inferredBodyReturnType = this.applySubstitution(actualBodyReturnType, this.currentSubstitution, new Set());
 
+    // If an expected return type is provided (e.g., from a JSX prop like onClick: () => void),
+    // check compatibility.
     if (expectedReturnTypeFromContext) {
-        const unificationResult = this.unify(expectedReturnTypeFromContext, inferredBodyReturnType, this.currentSubstitution);
-        if (unificationResult instanceof Error) {
-            this.reportError(
-                `Function body's return type '${inferredBodyReturnType}' is not compatible with expected return type '${expectedReturnTypeFromContext}'. ${unificationResult.message}`,
-                (ctx as any).expr()
-            );
+        // If the expected return type is 'void' (UnitType), any actual return type from the body is acceptable.
+        // The calling context (e.g., JSX attribute unification) will handle the overall function type compatibility.
+        if (expectedReturnTypeFromContext === UnitType) {
+            console.log(`[visitFuncExpr] Expected return type is void. Inferred body return type '${inferredBodyReturnType}' is acceptable and will be ignored by caller.`);
+        } else {
+            // For non-void expected return types, unify strictly.
+            const unificationResult = this.unify(expectedReturnTypeFromContext, inferredBodyReturnType, this.currentSubstitution);
+            if (unificationResult instanceof Error) {
+                this.reportError(
+                    `Function body's return type '${inferredBodyReturnType}' is not compatible with expected return type '${expectedReturnTypeFromContext}'. ${unificationResult.message}`,
+                    (ctx as any).expr()
+                );
+            }
         }
     }
 

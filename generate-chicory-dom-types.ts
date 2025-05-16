@@ -213,7 +213,7 @@ async function generateHtmlIntrinsicStrings(idlStore: any): Promise<string[]> {
     const propsRecordTypeString = `new RecordType(new Map([\n${elementAttributesListString}      ]))`;
     const jsxElementTypeString = `new JsxElementType(${propsRecordTypeString})`;
 
-    intrinsicDeclarations.push(`      declareType('${tagName}', ${jsxElementTypeString}, null, (err) => console.error("JSX Intrinsic Error (${tagName}):", err));`);
+    intrinsicDeclarations.push(`      declareType('${tagName}', ${jsxElementTypeString}, null, "JSX Intrinsic Error (${tagName}):");`);
   }
   return intrinsicDeclarations;
 }

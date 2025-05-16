@@ -9,7 +9,7 @@ test("should parse a simple self-closing JSX element", () => {
   const { code, errors, hints } = compile(chicoryCode);
 
   const elementHint = hints.find(h => h.range.start.line === 1 && h.range.start.character === 10);
-  expect(elementHint?.type).toMatch(/JsxElement<{.*}>/)
+  expect(elementHint?.type).toMatch(/JsxElement/)
 
   expect(code).toContain('let element = <div />;')
 });
@@ -21,7 +21,7 @@ test("should parse a simple JSX element with children", () => {
   const { code,  hints } = compile(chicoryCode);
 
   const elementHint = hints.find(h => h.range.start.line === 1 && h.range.start.character === 10);
-  expect(elementHint?.type).toMatch(/JsxElement<{.*}>/)
+  expect(elementHint?.type).toMatch(/JsxElement/)
   expect(code).toContain('let element = <div>{"Hello"}</div>;');
 });
 
@@ -32,6 +32,6 @@ test("should parse a JSX element with attributes", () => {
   const { code,  hints } = compile(chicoryCode);
 
   const elementHint = hints.find(h => h.range.start.line === 1 && h.range.start.character === 10);
-  expect(elementHint?.type).toMatch(/JsxElement<{.*}>/)
+  expect(elementHint?.type).toMatch(/JsxElement/)
   expect(code).toContain('let element = <div class="container" id={"1"} />;');
 });

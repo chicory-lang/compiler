@@ -154,8 +154,12 @@ export class JsxElementType implements ChicoryType {
   // Represents the result of a JSX expression, holding the type of its expected props.
   constructor(public propsType: RecordType) {}
   toString() {
+    const props = this.propsType.toString()
+    const propsMessage = props.length > 23
+      ? props.slice(0, 20) + "..."
+      : props
     // Indicate the props type it expects
-    return `JsxElement<${this.propsType.toString()}>`;
+    return `JsxElement<${propsMessage}>`;
   }
 }
 
