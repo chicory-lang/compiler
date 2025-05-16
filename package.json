@@ -48,6 +48,9 @@
     "build"
   ],
   "dependencies": {
+    "@webref/css": "^6.21.0",
+    "@webref/elements": "^2.4.0",
+    "@webref/idl": "^3.63.0",
     "antlr4ng": "^3.0.14"
   },
   "devDependencies": {

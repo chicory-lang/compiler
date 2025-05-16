@@ -1,6 +1,7 @@
 import { CharStream, CommonTokenStream, ParserRuleContext } from "antlr4ng";
 import { ChicoryLexer } from "./generated/ChicoryLexer";
 import { ChicoryParser } from "./generated/ChicoryParser";
+import declareJsxTypes from "./generated/internalChicoryJsxTypes.js"
 import * as path from "path";
 import * as parser from "./generated/ChicoryParser";
 import {
@@ -35,6 +36,8 @@ import {
   CompilationCacheEntry,
 } from "./env";
 import { Prelude } from "./Prelude";
+
+const JSX_INTRINSIC_PREFIX = "__jsx_";
 
 // Represents the state of coverage for the match expression
 interface MatchCoverage {
@@ -188,105 +191,34 @@ export class ChicoryTypeChecker {
 
     // Add constructor definitions for the type checker's ADT logic
     this.constructors.push(okConstructorDef, errConstructorDef);
-
-    // --- DisplayType ADT ---
-    const displayTypeName = "DisplayType";
-    const displayTypeAdt = DisplayTypeAdt; // Use the exported instance
-    this.environment.declare(displayTypeName, displayTypeAdt, null, (err) => console.error("Prelude Error (DisplayType):", err));
-
-    const displayConstructors = ["Block", "Inline", "Flex", "Grid", "None"];
-    displayConstructors.forEach(name => {
-        const constructorType = new FunctionType([], displayTypeAdt, name); // Nullary constructor
-        const constructorDef: ConstructorDefinition = { adtName: displayTypeName, name: name, type: constructorType };
-        this.environment.declare(name, constructorType, null, (err) => console.error(`Prelude Error (${name}):`, err));
-        this.constructors.push(constructorDef);
-    });
-    // --- End DisplayType ADT ---
-
   }
 
   // --- START: JSX Intrinsic Initialization ---
   private initializeJsxIntrinsics(): void {
       console.log("[initializeJsxIntrinsics] Initializing...");
+      const originalDeclare = this.environment.declare.bind(this.environment);
+      // Wrap the declare function to add a prefix to JSX intrinsic names (when type checking jsx expressions, we check for builtins using this prefix)
+      const jsxDeclare = (
+        identifier: string,
+        type: ChicoryType,
+        context: ParserRuleContext | null,
+        pushError: (str: string) => void
+      ) => {
+        // Prefix the tag name
+        const jsxIntrinsicName = JSX_INTRINSIC_PREFIX + identifier;
+        originalDeclare(jsxIntrinsicName, type, context, pushError);
+      };
 
-      // --- Define Style Record Type ---
-      const styleRecordType = new RecordType(new Map<string, RecordField>([
-          ['color',        { type: StringType, optional: true }],
-          ['backgroundColor', { type: StringType, optional: true }],
-          ['fontSize',     { type: StringType, optional: true }],
-          ['margin',       { type: StringType, optional: true }],
-          ['padding',      { type: StringType, optional: true }],
-          ['width',        { type: StringType, optional: true }],
-          ['height',       { type: StringType, optional: true }],
-          ['display',      { type: DisplayTypeAdt, optional: true }],
-          // ... add more as needed
-      ]));
-      console.log(`[initializeJsxIntrinsics] styleRecordType defined: ${styleRecordType.toString()}`);
-      
-      const domElement = new RecordType(new Map<string, RecordField>([
-          ['value', { type: StringType, optional: true }],
-      ]));
-
-      const commonDomEvent = new RecordType(new Map<string, RecordField>([
-          ['target', { type: domElement, optional: false }],
-      ]))
-
-      const commonHtmlAttributes = new Map<string, RecordField>([
-        ['class',   { type: StringType, optional: true }],
-        ['id',      { type: StringType, optional: true }],
-        ['style',   { type: styleRecordType, optional: true }],
-        ['onClick', { type: new FunctionType([commonDomEvent], UnitType, "onClick"), optional: true }],
-      ])
-
-      const commonHtmlFormAttributes = new Map<string, RecordField>([
-        ['name',     { type: StringType, optional: true }],
-        ['onChange', { type: new FunctionType([commonDomEvent], UnitType, "onChange"), optional: true }],
-        ['onInput',  { type: new FunctionType([commonDomEvent], UnitType, "onChange"), optional: true }],
-        ['value',    { type: StringType, optional: true }],
-        ['required', { type: BooleanType, optional: true }],
-      ])
-      
-      const defaultHtmlAttributes = new RecordType(commonHtmlAttributes)
-      const inputHtmlAttributes = new RecordType(new Map<string, RecordField>([
-          ...commonHtmlAttributes,
-          ...commonHtmlFormAttributes,
-          ['type', { type: new LiteralUnionType(new Set([
-            "button", "checkbox", "color", "date", "datetime-local", "email", "file", 
-            "hidden", "image", "month", "number", "password", "radio", "range", 
-            "reset", "search", "submit", "tel", "text", "time", "url", "week"
-          ])), optional: false }],
-      ]));
-
-      const formHtmlAttributes = new RecordType(new Map<string, RecordField>([
-          ...commonHtmlAttributes,
-          ...commonHtmlFormAttributes,
-          // Add other common attributes like title?, etc. as needed
-      ]));
-      console.log(`[initializeJsxIntrinsics] commonHtmlAttributes defined: ${commonHtmlAttributes.toString()}`);
-
-      const divType = new JsxElementType(defaultHtmlAttributes);
-      console.log(`[initializeJsxIntrinsics] Declaring 'div' with type: ${divType.toString()}`);
-      this.environment.declare('div', divType, null, (err) => console.error("JSX Intrinsic Error (div):", err));
-
-      const spanType = new JsxElementType(defaultHtmlAttributes);
-      console.log(`[initializeJsxIntrinsics] Declaring 'span' with type: ${spanType.toString()}`);
-      this.environment.declare('span', spanType, null, (err) => console.error("JSX Intrinsic Error (span):", err));
-
-      const pType = new JsxElementType(defaultHtmlAttributes);
-      console.log(`[initializeJsxIntrinsics] Declaring 'p' with type: ${pType.toString()}`);
-      this.environment.declare('p', pType, null, (err) => console.error("JSX Intrinsic Error (p):", err));
-
-      const h1Type = new JsxElementType(defaultHtmlAttributes);
-      console.log(`[initializeJsxIntrinsics] Declaring 'h1' with type: ${h1Type.toString()}`);
-      this.environment.declare('h1', h1Type, null, (err) => console.error("JSX Intrinsic Error (h1):", err));
-
-      const inputType = new JsxElementType(inputHtmlAttributes);
-      const formElement = new JsxElementType(formHtmlAttributes)
-      console.log(`[initializeJsxIntrinsics] Declaring 'input' with type: ${inputType.toString()}`);
-      this.environment.declare('input', inputType, null, (err) => console.error("JSX Intrinsic Error (input):", err));
-      this.environment.declare('button', formElement, null, (err) => console.error("JSX Intrinsic Error (input):", err));
-      this.environment.declare('textarea', formElement, null, (err) => console.error("JSX Intrinsic Error (input):", err));
-      
+      declareJsxTypes(jsxDeclare, {
+        StringType,
+        NumberType,
+        BooleanType,
+        UnitType,
+        FunctionType,
+        RecordType,
+        JsxElementType,
+        LiteralUnionType,
+      })
       console.log("[initializeJsxIntrinsics] Initialization complete.");
   }
 
@@ -1367,17 +1299,7 @@ export class ChicoryTypeChecker {
     const expressionCtx = ctx.expr();
     const annotationCtx = ctx.typeExpr();
 
-    let expressionType = this.visitExpr(expressionCtx);
-    // Apply main substitution - start with empty visited set
-    expressionType = this.applySubstitution(
-      expressionType,
-      this.currentSubstitution,
-      new Set()
-    ); // Apply subs before unification
-
     let annotatedType: ChicoryType | null = null;
-    let rhsFinalType: ChicoryType = expressionType; // The type of the RHS after potential annotation unification
-
     if (annotationCtx) {
       annotatedType = this.visitTypeExpr(annotationCtx);
       // Apply main substitution - start with empty visited set
@@ -1386,9 +1308,24 @@ export class ChicoryTypeChecker {
         this.currentSubstitution,
         new Set()
       ); // Apply subs to annotation too
+    }
 
+    // Pass annotatedType as expectedType if it's a function, otherwise undefined
+    const expectedExprType = (annotatedType instanceof FunctionType) ? annotatedType : undefined;
+    let expressionType = this.visitExpr(expressionCtx, expectedExprType);
+
+    // Apply main substitution - start with empty visited set
+    expressionType = this.applySubstitution(
+      expressionType,
+      this.currentSubstitution,
+      new Set()
+    ); // Apply subs before unification
+
+    let rhsFinalType: ChicoryType = expressionType; // The type of the RHS after potential annotation unification
+
+    if (annotatedType) { // Check if annotatedType was derived
       // --- Resolve Annotated Type if Alias ---
-      let resolvedAnnotatedType = annotatedType;
+      let resolvedAnnotatedType = annotatedType; // Already substituted
       if (annotatedType instanceof GenericType && this.typeAliasDefinitions.has(annotatedType.name)) {
           console.log(`[visitAssignStmt] Annotated type is alias ${annotatedType}. Expanding.`);
           // Pass empty visited set for self-contained expansion
@@ -1545,6 +1482,15 @@ export class ChicoryTypeChecker {
     if (targetCtx.IDENTIFIER()) {
       // Simple assignment: let x = ...
       const identifierName = targetCtx.IDENTIFIER()!.getText();
+
+      // Check if assigning a 'void' type value to a variable
+      if (rhsFinalType === UnitType) {
+        this.reportError(
+          `Cannot assign a value of type 'void' to variable '${identifierName}'.`,
+          expressionCtx // Report error on the expression producing 'void'
+        );
+      }
+
       this.environment.declare(identifierName, rhsFinalType, ctx, (str) =>
         this.reportError(str, ctx)
       );
@@ -2411,9 +2357,10 @@ export class ChicoryTypeChecker {
     return UnitType;
   }
 
-  visitExpr(ctx: parser.ExprContext): ChicoryType {
-    let primaryType = this.visitPrimaryExpr(ctx.primaryExpr());
+  visitExpr(ctx: parser.ExprContext, expectedType?: ChicoryType): ChicoryType {
+    let primaryType = this.visitPrimaryExpr(ctx.primaryExpr(), expectedType); // Pass expectedType
     for (const tailExpr of ctx.tailExpr()) {
+      // Tail expressions modify the primaryType; expectedType applies to the primary part.
       primaryType = this.visitTailExpr(tailExpr, primaryType);
     }
     return primaryType;
@@ -3058,7 +3005,7 @@ export class ChicoryTypeChecker {
     }
   }
 
-  visitPrimaryExpr(ctx: parser.PrimaryExprContext): ChicoryType {
+  visitPrimaryExpr(ctx: parser.PrimaryExprContext, expectedType?: ChicoryType): ChicoryType {
     if (ctx instanceof parser.IdentifierExpressionContext) {
       return this.visitIdentifier(ctx);
     } else if (ctx instanceof parser.LiteralExpressionContext) {
@@ -3072,9 +3019,9 @@ export class ChicoryTypeChecker {
     } else if (ctx instanceof parser.BlockExpressionContext) {
       return this.visitBlockExpr(ctx.blockExpr());
     } else if (ctx instanceof parser.IfExpressionContext) {
-      return this.visitIfExpr(ctx.ifExpr());
+      return this.visitIfExpr(ctx.ifExpr(), expectedType); // Pass expectedType
     } else if (ctx instanceof parser.FunctionExpressionContext) {
-      return this.visitFuncExpr(ctx.funcExpr());
+      return this.visitFuncExpr(ctx.funcExpr(), expectedType); // Pass expectedType
     } else if (ctx instanceof parser.MatchExpressionContext) {
       return this.visitMatchExpr(ctx.matchExpr());
     } else if (ctx instanceof parser.JsxExpressionContext) {
@@ -3523,8 +3470,8 @@ export class ChicoryTypeChecker {
     return blockType;
   }
 
-  visitIfExpr(ctx: parser.IfExprContext): ChicoryType {
-    const conditionType = this.visitExpr(ctx.justIfExpr()[0].expr()[0]);
+  visitIfExpr(ctx: parser.IfExprContext, expectedType?: ChicoryType): ChicoryType {
+    const conditionType = this.visitExpr(ctx.justIfExpr()[0].expr()[0]); // Condition doesn't use expectedType
 
     // Try to unify condition with BooleanType
     if (conditionType instanceof TypeVariable) {
@@ -3546,10 +3493,11 @@ export class ChicoryTypeChecker {
       );
     }
 
-    const thenType = this.visitExpr(ctx.justIfExpr()[0].expr()[1]);
+    // Pass expectedType to branches
+    const thenType = this.visitExpr(ctx.justIfExpr()[0].expr()[1], expectedType);
 
     for (let i = 1; i < ctx.justIfExpr().length; i++) {
-      const elseIfConditionType = this.visitExpr(ctx.justIfExpr()[i].expr()[0]);
+      const elseIfConditionType = this.visitExpr(ctx.justIfExpr()[i].expr()[0]); // Condition doesn't use expectedType
 
       // Try to unify condition with BooleanType
       if (elseIfConditionType instanceof TypeVariable) {
@@ -3572,18 +3520,18 @@ export class ChicoryTypeChecker {
       }
 
       // Note: We are not requiring same types for all branches
-      this.visitExpr(ctx.justIfExpr()[i].expr()[1]);
+      this.visitExpr(ctx.justIfExpr()[i].expr()[1], expectedType); // Pass expectedType
     }
 
     if (ctx.expr()) {
       // Note: We are not requiring same types
-      return this.visitExpr(ctx.expr()!);
+      return this.visitExpr(ctx.expr()!, expectedType); // Pass expectedType
     }
 
     return thenType;
   }
 
-  visitFuncExpr(ctx: parser.FuncExprContext): ChicoryType {
+  visitFuncExpr(ctx: parser.FuncExprContext, expectedType?: ChicoryType): ChicoryType {
     // Save the current substitution
     const outerSubstitution = new Map(this.currentSubstitution);
     // Create a fresh substitution for this function
@@ -3591,54 +3539,76 @@ export class ChicoryTypeChecker {
 
     this.environment = this.environment.pushScope(); // Push a new scope for function parameters
 
-    const paramTypes: ChicoryType[] = [];
-    if (
-      ctx instanceof parser.ParenFunctionExpressionContext &&
-      ctx.parameterList()
-    ) {
-      ctx
-        .parameterList()!
-        .IDENTIFIER()
-        .forEach((param) => {
-          const paramName = param.getText();
-          // Create a fresh type variable for each parameter
-          const typeVar = this.newTypeVar();
-          this.environment.declare(paramName, typeVar, ctx, (str) =>
-            this.reportError(str, ctx)
-          );
-          paramTypes.push(typeVar);
-        });
+    const actualParamTypes: ChicoryType[] = [];
+    let expectedParamTypesFromContext: ChicoryType[] | null = null;
+    let expectedReturnTypeFromContext: ChicoryType | null = null;
+    let funcArity = 0;
+
+    if (ctx instanceof parser.ParenFunctionExpressionContext && ctx.parameterList()) {
+        funcArity = ctx.parameterList()!.IDENTIFIER().length;
     } else if (ctx instanceof parser.ParenlessFunctionExpressionContext) {
-      const paramName = ctx.IDENTIFIER().getText();
-      const typeVar = this.newTypeVar();
-      this.environment.declare(paramName, typeVar, ctx, (str) =>
-        this.reportError(str, ctx)
-      );
-      paramTypes.push(typeVar);
+        funcArity = 1;
     }
 
-    // This could be either kind, but both have `.expr`
-    const returnType = this.visitExpr(
-      (ctx as parser.ParenExpressionContext).expr()
-    );
+    if (expectedType instanceof FunctionType) {
+        if (expectedType.paramTypes.length === funcArity) {
+            expectedParamTypesFromContext = expectedType.paramTypes;
+            expectedReturnTypeFromContext = expectedType.returnType;
+            console.log(`[visitFuncExpr] Using expected types for params: [${expectedParamTypesFromContext.map(p => p.toString()).join(', ')}], expected return: ${expectedReturnTypeFromContext.toString()}`);
+        } else {
+            this.reportError(
+                `Function expression has ${funcArity} parameters, but context expects a function with ${expectedType.paramTypes.length} parameters. Parameter types will be inferred.`,
+                ctx
+            );
+        }
+    }
 
-    // Apply the accumulated substitutions to parameter types and return type
-    // Pass empty visited set
-    const inferredParamTypes = paramTypes.map((type) =>
-      this.applySubstitution(type, this.currentSubstitution, new Set())
-    );
-    const inferredReturnType = this.applySubstitution(
-      returnType,
-      this.currentSubstitution,
-      new Set()
-    );
 
-    this.environment = this.environment.popScope()!; // Pop the function scope
+    if (ctx instanceof parser.ParenFunctionExpressionContext && ctx.parameterList()) {
+        ctx.parameterList()!.IDENTIFIER().forEach((paramNode, index) => {
+            const paramName = paramNode.getText();
+            const paramType = (expectedParamTypesFromContext && expectedParamTypesFromContext[index])
+                ? expectedParamTypesFromContext[index]
+                : this.newTypeVar(`T_param_${paramName}`);
+            this.environment.declare(paramName, paramType, ctx, (str) => this.reportError(str, ctx));
+            actualParamTypes.push(paramType);
+        });
+    } else if (ctx instanceof parser.ParenlessFunctionExpressionContext) {
+        const paramNode = ctx.IDENTIFIER();
+        const paramName = paramNode.getText();
+        const paramType = (expectedParamTypesFromContext && expectedParamTypesFromContext[0])
+            ? expectedParamTypesFromContext[0]
+            : this.newTypeVar(`T_param_${paramName}`);
+        this.environment.declare(paramName, paramType, ctx, (str) => this.reportError(str, ctx));
+        actualParamTypes.push(paramType);
+    }
 
-    // Restore the outer substitution
+    // Determine the expected type for the body based on the context, if available
+    const bodyExpectedType = expectedReturnTypeFromContext ?? undefined;
+    const actualBodyReturnType = this.visitExpr((ctx as any).expr(), bodyExpectedType);
+
+    const inferredBodyReturnType = this.applySubstitution(actualBodyReturnType, this.currentSubstitution, new Set());
+
+    if (expectedReturnTypeFromContext) {
+        const unificationResult = this.unify(expectedReturnTypeFromContext, inferredBodyReturnType, this.currentSubstitution);
+        if (unificationResult instanceof Error) {
+            this.reportError(
+                `Function body's return type '${inferredBodyReturnType}' is not compatible with expected return type '${expectedReturnTypeFromContext}'. ${unificationResult.message}`,
+                (ctx as any).expr()
+            );
+        }
+    }
+
+    this.environment = this.environment.popScope()!;
     this.currentSubstitution = outerSubstitution;
 
-    return new FunctionType(inferredParamTypes, inferredReturnType);
+    // Apply the (outer) currentSubstitution to the types determined (params might be from context, return type is inferred then potentially unified)
+    const finalParamTypes = actualParamTypes.map(type => this.applySubstitution(type, this.currentSubstitution, new Set()));
+    const finalReturnType = this.applySubstitution(inferredBodyReturnType, this.currentSubstitution, new Set());
+    
+    const resultFuncType = new FunctionType(finalParamTypes, finalReturnType);
+    console.log(`[visitFuncExpr] Resulting function type: ${resultFuncType.toString()}`);
+    return resultFuncType;
   }
 
   visitCallExpr(
@@ -4859,8 +4829,9 @@ export class ChicoryTypeChecker {
 
     console.log(`  > Tag name: ${tagName}`);
 
-    // Look up the tag name in the environment
-    const elementType = this.environment.getType(tagName);
+    // Look up the tag name in the environment using the prefix
+    const jsxIntrinsicName = JSX_INTRINSIC_PREFIX + tagName;
+    const elementType = this.environment.getType(jsxIntrinsicName) ?? this.environment.getType(tagName);
 
     if (!elementType) {
       this.reportError(`Unknown JSX element type: '<${tagName}>'.`, openingElement ?? selfClosingElement ?? ctx);
@@ -4946,7 +4917,9 @@ export class ChicoryTypeChecker {
           // Attribute has a value (e.g., class="hi", count={1}, type="button")
           if (valueCtx.expr()) {
             // Value is an expression { ... }
-            providedValueType = this.visitExpr(valueCtx.expr()!);
+            // Pass expectedInnerType if it's a function (for event handlers)
+            const exprExpectedType = (expectedInnerType instanceof FunctionType) ? expectedInnerType : undefined;
+            providedValueType = this.visitExpr(valueCtx.expr()!, exprExpectedType);
           } else if (valueCtx.STRING()) {
             // Direct string literal in JSX attribute, e.g. type="button"
             // For type checking against LiteralUnionType, we need the actual value.
@@ -4959,29 +4932,6 @@ export class ChicoryTypeChecker {
             providedValueType = UnknownType;
           }
            console.log(`    > Provided value type for '${attrName}': ${providedValueType.toString()}`);
-
-           // --- Special Check for style.display String Literals ---
-           // This is a HACK/SIMPLIFICATION because we don't easily have the expected type here.
-           // A better approach would involve passing expected types down more rigorously.
-           if (attrName === 'style' && valueCtx.expr()) {
-               // If the attribute is 'style' and the value is an expression '{...}'
-               // We need to look inside the expression to see if it's a record literal
-               // and check the 'display' field specifically. This is getting complex here.
-               // Let's defer this proper check. The current logic will attempt to unify
-               // the inferred record type with the expected styleRecordType later.
-               console.warn(`[visitAndCheckJsxAttributes] TODO: Implement deep check for style={{ display: "literal" }}`);
-           } else if (attrName === 'display' && valueCtx.STRING()) {
-               // This case handles <div display="block" /> which isn't standard JSX style prop.
-               // If we intended to support this, we'd check the literal here.
-               // const literalValue = valueCtx.STRING()!.getText().slice(1, -1); // Remove quotes
-               // const allowedDisplayValues = ["block", "inline", "flex", "grid", "none"];
-               // if (expectedInnerType === DisplayTypeAdt && allowedDisplayValues.includes(literalValue)) {
-               //     console.log(`    > Allowing string literal "${literalValue}" for 'display' attribute.`);
-               //     // We can perhaps coerce providedValueType here, but it feels wrong.
-               //     // Let unification handle it for now, expecting it to fail correctly without more changes.
-               // }
-           }
-           // --- End Special Check ---
         }
 
         // Apply substitution to the provided value type
