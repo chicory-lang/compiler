@@ -4840,7 +4840,20 @@ export class ChicoryTypeChecker {
       openingElement = ctx.jsxOpeningElement()!;
       tagName = openingElement.IDENTIFIER().getText();
       attributesCtx = openingElement.jsxAttributes() ?? null;
-      // TODO: Handle children if needed (ctx.jsxChild())
+      // Handle children
+      ctx.jsxChild().forEach(child => {
+        if (child instanceof parser.JsxChildJsxContext) {
+          this.visitJsxExpr(child.jsxExpr());
+        } else if (child instanceof parser.JsxChildExpressionContext) {
+          // Type check the expression within { ... }
+          // The expected type for a child expression is typically 'any' or a specific 'ReactNode' type,
+          // but for now, we'll just visit it to catch errors within the expression itself.
+          this.visitExpr(child.expr())
+        }
+        else {
+          // jsxText nodes are typically not type-checked in this manner unless specific rules apply.
+        }
+      });
     } else if (ctx.jsxSelfClosingElement()) {
       selfClosingElement = ctx.jsxSelfClosingElement()!;
       tagName = selfClosingElement.IDENTIFIER().getText();
@@ -4889,7 +4902,10 @@ export class ChicoryTypeChecker {
     tagName: string,
     jsxExprCtx: parser.JsxExprContext // For error reporting context
   ): void {
-    console.log(`[visitAndCheckJsxAttributes] Checking attributes for <${tagName}> against expected type: ${expectedPropsType.toString()}`);
+    const shortType = expectedPropsType.toString().length > 60
+      ? expectedPropsType.toString().slice(0, 57) + "..."
+      : expectedPropsType.toString();
+    console.log(`[visitAndCheckJsxAttributes] Checking attributes for <${tagName}> against expected type: ${shortType}`);
     const providedAttributeNames = new Set<string>();
 
     if (!attributesCtx) {
