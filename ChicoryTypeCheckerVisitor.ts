@@ -4840,6 +4840,29 @@ export class ChicoryTypeChecker {
       openingElement = ctx.jsxOpeningElement()!;
       tagName = openingElement.IDENTIFIER().getText();
       attributesCtx = openingElement.jsxAttributes() ?? null;
+
+      // Check for matching closing tag
+      const closingElement = ctx.jsxClosingElement();
+      if (closingElement) {
+        const closingTagName = closingElement.IDENTIFIER().getText();
+        if (tagName !== closingTagName) {
+          this.reportError(
+            `Expected corresponding JSX closing tag for '<${tagName}>'. Found '</${closingTagName}>' instead.`,
+            closingElement // Report error on the closing tag context
+          );
+          // Even with mismatched tags, we might try to proceed with type checking based on the opening tag
+          // to provide more errors, or we could return UnknownType here.
+          // For now, report and continue.
+        }
+      } else {
+        // This case should ideally be caught by the parser if the grammar expects a closing tag.
+        // If it can happen, it means an opening tag exists without any closing tag.
+        this.reportError(
+          `Missing corresponding JSX closing tag for '<${tagName}>'.`,
+          openingElement // Report error on the opening tag
+        );
+      }
+
       // Handle children
       ctx.jsxChild().forEach(child => {
         if (child instanceof parser.JsxChildJsxContext) {

@@ -35,3 +35,21 @@ test("should parse a JSX element with attributes", () => {
   expect(elementHint?.type).toMatch(/JsxElement/)
   expect(code).toContain('let element = <div class="container" id={"1"} />;');
 });
+
+test("should throw errors on nested jsx elements", () => {
+  const chicoryCode = `
+  let element = <div><input type="invalid" /></div>
+  `;
+  const { code, errors, hints } = compile(chicoryCode);
+
+  expect(errors.length).toBe(1)
+});
+
+test("should throw error when jsx element not correctly closed", () => {
+  const chicoryCode = `
+  let element = <div>{"something"}</span>
+  `;
+  const { code, errors, hints } = compile(chicoryCode);
+
+  expect(errors.length).toBeGreaterThan(0)
+});
