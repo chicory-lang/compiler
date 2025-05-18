@@ -4869,9 +4869,16 @@ export class ChicoryTypeChecker {
           this.visitJsxExpr(child.jsxExpr());
         } else if (child instanceof parser.JsxChildExpressionContext) {
           // Type check the expression within { ... }
-          // The expected type for a child expression is typically 'any' or a specific 'ReactNode' type,
-          // but for now, we'll just visit it to catch errors within the expression itself.
-          this.visitExpr(child.expr())
+          // Expected type for a child expression is JsxElementType or StringType.
+          const childExprType = this.visitExpr(child.expr());
+          const substitutedChildExprType = this.applySubstitution(childExprType, this.currentSubstitution, new Set());
+
+          if (!(substitutedChildExprType instanceof JsxElementType || substitutedChildExprType === StringType || substitutedChildExprType === NumberType)) {
+            this.reportError(
+              `JSX child expressions must evaluate to a JSX element, a string, or a number. Found type: '${substitutedChildExprType.toString()}'.`,
+              child.expr()
+            );
+          }
         }
         else {
           // jsxText nodes are typically not type-checked in this manner unless specific rules apply.
