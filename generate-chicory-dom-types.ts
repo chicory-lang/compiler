@@ -98,29 +98,50 @@ async function generateStyleRecordTypeString(): Promise<string> {
 // --- Attribute Type Mapper ---
 function mapAttributeTypeToChicoryString(attrName: string, attrDefinition: any, idlStore: any): string {
   if (attrName.startsWith("on")) {
+    // For IDL event handlers like `onabort`, attrName will be `onAbort` after mapping.
+    // For `el.attributes` event handlers, it's similar.
     return `new FunctionType([commonDomEvent], UnitType, "${attrName}")`;
   }
 
-  // Check for boolean nature based on IDL or common knowledge
+  // Determine the IDL type information structure
+  // If attrDefinition.idl exists, it's from el.attributes.
+  // Otherwise, attrDefinition might be an IDL member itself (e.g. from interfaceDef.members).
+  const idlTypeFromAttrEl = attrDefinition.idl?.type; // Used when attrDefinition is from el.attributes
+  const idlTypeDirectFromMember = attrDefinition.idlType;    // Used when attrDefinition is an IDL member
+  const effectiveIdlTypeInfo = idlTypeFromAttrEl || idlTypeDirectFromMember;
+
   const isBooleanAttribute = (idlTypeObj: any): boolean => {
     if (!idlTypeObj) return false;
+    // Handles cases like: "boolean" or { idlType: "boolean", ... }
     if (typeof idlTypeObj === 'string') return idlTypeObj.toLowerCase() === 'boolean';
     if (idlTypeObj.idlType && typeof idlTypeObj.idlType === 'string') return idlTypeObj.idlType.toLowerCase() === 'boolean';
     return false;
   };
 
-  if (isBooleanAttribute(attrDefinition.idl?.type) || typeof attrDefinition.value === 'boolean') {
+  if (isBooleanAttribute(effectiveIdlTypeInfo) || typeof attrDefinition.value === 'boolean') {
     return "BooleanType";
   }
-  if (attrDefinition.idl?.type?.idlType === "long" || attrDefinition.idl?.type === "long" ||
-      attrDefinition.idl?.type?.idlType === "unsigned long" || attrDefinition.idl?.type === "unsigned long" ||
-      attrDefinition.idl?.type?.idlType === "short" || attrDefinition.idl?.type === "short") {
-    if (attrName === 'tabindex' || attrName === 'cols' || attrName === 'rows' || attrName === 'size' || attrName === 'maxLength' || attrName === 'minLength' || attrName === 'span') {
-        return "NumberType";
-    }
+
+  // For numeric types from IDL
+  let idlTypeNameForNumericCheck = "";
+  if (effectiveIdlTypeInfo) {
+      if (typeof effectiveIdlTypeInfo === 'string') idlTypeNameForNumericCheck = effectiveIdlTypeInfo;
+      else if (effectiveIdlTypeInfo.idlType && typeof effectiveIdlTypeInfo.idlType === 'string') idlTypeNameForNumericCheck = effectiveIdlTypeInfo.idlType;
   }
 
+  if (idlTypeNameForNumericCheck) {
+      const lowerIdlTypeName = idlTypeNameForNumericCheck.toLowerCase();
+      if (lowerIdlTypeName === "long" || lowerIdlTypeName === "unsigned long" || lowerIdlTypeName === "short" || lowerIdlTypeName === "double" || lowerIdlTypeName === "float") {
+          // More robustly check if the attribute name suggests a number type in HTML context
+          if (['tabindex', 'cols', 'rows', 'size', 'maxLength', 'minLength', 'span', 'width', 'height', 'start', 'reversed', 'rowspan', 'colspan', 'low', 'high', 'optimum', 'valueAsNumber'].includes(attrName) ||
+              (attrName === 'value' && (idlTypeNameForNumericCheck.toLowerCase() === 'double' || idlTypeNameForNumericCheck.toLowerCase() === 'long')) // e.g. input type=number
+          ) {
+              return "NumberType";
+          }
+      }
+  }
 
+  // For literal unions from attrDefinition.value (typically from el.attributes)
   if (attrDefinition.value && Array.isArray(attrDefinition.value) && attrDefinition.value.length > 0) {
     const keywords = attrDefinition.value
       .map((v: string) => `"${v.toLowerCase()}"`)
@@ -130,16 +151,17 @@ function mapAttributeTypeToChicoryString(attrName: string, attrDefinition: any, 
     }
   }
 
-  if (attrDefinition.idl && attrDefinition.idl.type) {
-    let typeName = "";
-    if (typeof attrDefinition.idl.type === 'string') typeName = attrDefinition.idl.type;
-    else if (attrDefinition.idl.type.idlType && typeof attrDefinition.idl.type.idlType === 'string') typeName = attrDefinition.idl.type.idlType;
+  // For enums from IDL (using effectiveIdlTypeInfo)
+  if (effectiveIdlTypeInfo) {
+    let typeNameToLookup = "";
+    if (typeof effectiveIdlTypeInfo === 'string') typeNameToLookup = effectiveIdlTypeInfo;
+    else if (effectiveIdlTypeInfo.idlType && typeof effectiveIdlTypeInfo.idlType === 'string') typeNameToLookup = effectiveIdlTypeInfo.idlType;
 
-    if (typeName) {
+    if (typeNameToLookup) {
       for (const idlFileBasename of Object.keys(idlStore)) {
         const idlFile = idlStore[idlFileBasename];
         if (idlFile && Array.isArray(idlFile)) {
-            const anEnum = idlFile.find(def => def.type === "enum" && def.name === typeName);
+            const anEnum = idlFile.find(def => def.type === "enum" && def.name === typeNameToLookup);
             if (anEnum && anEnum.type === "enum" && anEnum.values) {
                 const enumValues = anEnum.values.map((v:any) => `"${v.value}"`).join(', ');
                 return `new LiteralUnionType(new Set([${enumValues}]))`;
@@ -155,60 +177,125 @@ async function generateHtmlIntrinsicStrings(idlStore: any): Promise<string[]> {
   const elementsData = await webElements.listAll();
   const intrinsicDeclarations: string[] = [];
 
+  // Helper to find IDL interface definition
+  const findIdlInterface = (interfaceName: string) => {
+    for (const idlFileBasename of Object.keys(idlStore)) {
+      const idlFile = idlStore[idlFileBasename];
+      if (idlFile && Array.isArray(idlFile)) {
+        const interfaceDef = idlFile.find(def => def.type === "interface" && def.name === interfaceName);
+        if (interfaceDef) return interfaceDef;
+      }
+    }
+    return null;
+  };
+
   for (const el of elementsData["html"]["elements"]) {
     if (!el.name || el.obsolete) continue;
     const tagName = el.name;
     const specificAttributes = new Map<string, string>();
 
-    if (el.attributes) {
+    // 1. Process attributes from el.attributes (if any)
+    if (el.attributes && Array.isArray(el.attributes)) {
       for (const attr of el.attributes) {
         if (attr.obsolete) continue;
-        let attrName = attr.name;
+        let originalAttrName = attr.name;
+        let propName = attr.name;
 
-        if (attrName === "class") attrName = "class";
-        else if (attrName === "for") attrName = "htmlFor";
-        else if (attrName.startsWith("on")) {
-          attrName = "on" + attrName.charAt(2).toUpperCase() + attrName.slice(3);
+        if (propName === "class") { /* Let commonHtmlAttributes handle className, specific can override 'class' */ }
+        else if (propName === "for") { propName = "htmlFor"; }
+        else if (propName.startsWith("on")) { propName = "on" + propName.charAt(2).toUpperCase() + propName.slice(3); }
+
+        const chicoryAttrType = mapAttributeTypeToChicoryString(propName, attr, idlStore);
+        specificAttributes.set(propName, `{ type: ${chicoryAttrType}, optional: true }`);
+        if (originalAttrName === "for" && propName === "htmlFor") {
+          specificAttributes.set("for", `{ type: ${chicoryAttrType}, optional: true }`);
         }
-        // Other HTML attribute names are generally kept as is (e.g., 'accept-charset' not camelCased for JSX in Chicory)
-
-        const chicoryAttrType = mapAttributeTypeToChicoryString(attrName, attr, idlStore);
-        specificAttributes.set(attrName, `{ type: ${chicoryAttrType}, optional: true }`);
+        if (originalAttrName === "class") { // Ensure 'class' is also set if defined here
+            specificAttributes.set("class", `{ type: ${chicoryAttrType}, optional: true }`);
+        }
       }
     }
 
-    let elementAttributesListString = `          ...commonHtmlAttributes,\n`;
-    if (['input', 'textarea', 'select', 'button', 'form', 'fieldset', 'label', 'option', 'optgroup', 'output', 'progress', 'meter'].includes(tagName)) {
-      elementAttributesListString += `          ...commonFormElementAttributes,\n`;
+    // 2. Process attributes from el.interface (if any)
+    if (el.interface) {
+      const interfaceDef = findIdlInterface(el.interface);
+      if (interfaceDef && interfaceDef.members) {
+        for (const member of interfaceDef.members) {
+          if (member.type === "attribute") {
+            let originalAttrName = member.name; // e.g. "href", "className" from IDL
+            let propName = member.name;
+
+            // Apply mappings for known HTML attribute names that differ in JSX
+            if (propName === "htmlFor") { /* IDL might use htmlFor directly */ }
+            else if (originalAttrName === "for") { propName = "htmlFor"; } // if IDL used 'for'
+            else if (propName === "className") { /* IDL might use className directly */ }
+            else if (originalAttrName === "class") { propName = "className"; } // if IDL used 'class'
+            else if (propName.startsWith("on")) { /* Already in correct onXyz format from IDL usually */ }
+
+
+            // The 'member' object itself serves as attrDefinition for mapAttributeTypeToChicoryString
+            const chicoryAttrType = mapAttributeTypeToChicoryString(propName, member, idlStore);
+            specificAttributes.set(propName, `{ type: ${chicoryAttrType}, optional: true }`);
+
+            // Ensure both 'for'/'htmlFor' and 'class'/'className' are available if source was original name
+            if (originalAttrName === "for") {
+              specificAttributes.set("for", `{ type: ${chicoryAttrType}, optional: true }`);
+              specificAttributes.set("htmlFor", `{ type: ${chicoryAttrType}, optional: true }`);
+            }
+            if (originalAttrName === "class") {
+              specificAttributes.set("class", `{ type: ${chicoryAttrType}, optional: true }`);
+              specificAttributes.set("className", `{ type: ${chicoryAttrType}, optional: true }`);
+            }
+          }
+        }
+      }
     }
 
-    specificAttributes.forEach((value, key) => {
-        // Avoid overriding common attributes unless the specific one is more precise
-        // This logic is simplified: a robust merge would be better.
-        const isCommon = ['class', 'className', 'id', 'style', 'title', 'lang', 'dir', 'hidden', 'tabindex'].includes(key) || key.startsWith("on");
-        const isCommonForm = ['name', 'disabled', 'form', 'value', 'defaultValue', 'checked', 'defaultChecked', 'required', 'readOnly', 'multiple', 'placeholder', 'type', 'accept', 'alt', 'autoComplete', 'autoFocus', 'capture', 'cols', 'rows', 'wrap', 'maxLength', 'minLength', 'pattern', 'min', 'max', 'step', 'list', 'onChange', 'onInput', 'onInvalid', 'onSelect', 'onSubmit', 'onReset'].includes(key);
-
-        if (!isCommon && !isCommonForm) {
-            elementAttributesListString += `          ['${key}', ${value}],\n`;
-        } else if (isCommon && value !== `{ type: StringType, optional: true }` && value !== `{ type: BooleanType, optional: true }` && !value.startsWith(`new FunctionType([commonDomEvent]`)) {
-            // If it's common, but the derived type is more specific (e.g. a LiteralUnion), allow override
-            elementAttributesListString += `          ['${key}', ${value}], // Override common\n`;
-        } else if (isCommonForm && value !== `{ type: StringType, optional: true }` && value !== `{ type: BooleanType, optional: true }` && !value.startsWith(`new FunctionType([commonDomEvent]`)) {
-            elementAttributesListString += `          ['${key}', ${value}], // Override common form\n`;
+    // 3. Apply Manual Overrides/Additions to the specificAttributes map
+    if (tagName === 'a') {
+        if (!specificAttributes.has('href')) {
+            specificAttributes.set('href', '{ type: StringType, optional: true }');
         }
-    });
+    } else if (tagName === 'img') {
+        specificAttributes.set('alt', '{ type: StringType, optional: true }');
+        if (!specificAttributes.has('src')) {
+            specificAttributes.set('src', '{ type: StringType, optional: true }');
+        }
+    } else if (tagName === 'form') {
+        if (!specificAttributes.has('action')) {
+            specificAttributes.set('action', '{ type: StringType, optional: true }');
+        }
+        if (!specificAttributes.has('method')) {
+            const formMethodType = `new LiteralUnionType(new Set(["get", "post", "dialog"]))`;
+            specificAttributes.set('method', `{ type: ${formMethodType}, optional: true }`);
+        }
+    } else if (tagName === 'label') {
+        if (!specificAttributes.has('for')) {
+            specificAttributes.set('for', '{ type: StringType, optional: true }');
+        }
+        if (!specificAttributes.has('htmlFor')) {
+            specificAttributes.set('htmlFor', '{ type: StringType, optional: true }');
+        }
+    }
 
-
-    // Special override for input type attribute
+    // Special override for input type attribute (modifies the map)
     if (tagName === 'input') {
       const inputTypeValues = [
         "button", "checkbox", "color", "date", "datetime-local", "email", "file",
         "hidden", "image", "month", "number", "password", "radio", "range",
         "reset", "search", "submit", "tel", "text", "time", "url", "week"
       ].map(v => `"${v}"`).join(', ');
-      elementAttributesListString += `          ['type', { type: new LiteralUnionType(new Set([${inputTypeValues}])), optional: true }], // Specific for input\n`;
+      specificAttributes.set('type', `{ type: new LiteralUnionType(new Set([${inputTypeValues}])), optional: true }`);
     }
 
+    // 4. Build the elementAttributesListString from common and specific attributes
+    let elementAttributesListString = `          ...commonHtmlAttributes,\n`;
+    if (['input', 'textarea', 'select', 'button', 'form', 'fieldset', 'label', 'option', 'optgroup', 'output', 'progress', 'meter'].includes(tagName)) {
+      elementAttributesListString += `          ...commonFormElementAttributes,\n`;
+    }
+    specificAttributes.forEach((value, key) => {
+        elementAttributesListString += `          ['${key}', ${value}],\n`;
+    });
 
     const propsRecordTypeString = `new RecordType(new Map([\n${elementAttributesListString}      ]))`;
     const jsxElementTypeString = `new JsxElementType(${propsRecordTypeString})`;
