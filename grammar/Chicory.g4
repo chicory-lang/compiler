@@ -152,12 +152,14 @@ justIfExpr
 
 funcExpr
     : '(' NL* parameterList? NL* ')' '=>' NL* expr  #ParenFunctionExpression
-    | IDENTIFIER '=>' NL* expr                      #ParenlessFunctionExpression
+    | idOrWild '=>' NL* expr                      #ParenlessFunctionExpression
     ;
 
 parameterList
-    : IDENTIFIER (',' IDENTIFIER)*
+    : idOrWild (',' idOrWild)*
     ;
+
+idOrWild: IDENTIFIER | '_';
 
 callExpr
     : '(' NL* (expr (',' NL* expr)*)? NL* ')'

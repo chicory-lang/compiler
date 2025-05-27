@@ -597,44 +597,50 @@ export class ChicoryTypeChecker {
 
     if (type1 instanceof FunctionType && type2 instanceof FunctionType) {
       console.log(`[unify] BRANCH: FunctionType vs FunctionType`);
-      if (type1.paramTypes.length !== type2.paramTypes.length) {
+
+      // type1 is EXPECTED function type, type2 is PROVIDED function type.
+      // If the provided function (type2) has MORE parameters than expected (type1), it's an error.
+      if (type1.paramTypes.length < type2.paramTypes.length) {
         const error = new Error(
-          "Cannot unify function types with different number of parameters"
+          `Function type mismatch: Expected ${type1.paramTypes.length} parameters, but provided function has ${type2.paramTypes.length}.`
         );
         console.error(`[unify] ERROR: ${error.message}`);
         console.log(`[unify] EXIT (error)`);
         return error;
       }
-      console.log(`  > Recursively unifying parameter types`);
-      for (let i = 0; i < type1.paramTypes.length; i++) {
+
+      // Unify parameters up to the arity of the *provided* function (type2).
+      // If type1 (expected) has more parameters, those extra parameters are considered
+      // implicitly ignored by the provided function type2.
+      console.log(`  > Recursively unifying parameter types (up to arity of provided function type2: ${type2.paramTypes.length}).`);
+      for (let i = 0; i < type2.paramTypes.length; i++) { // Loop up to type2's (provided) arity
         const result = this.unify(
-          type1.paramTypes[i],
-          type2.paramTypes[i],
+          type1.paramTypes[i], // Expected param type
+          type2.paramTypes[i], // Provided param type
           substitution
         );
         if (result instanceof Error) {
           console.error(
-            `[unify] ERROR: Failed unifying function param ${i}: ${result.message}`
+            `[unify] ERROR: Failed unifying function param ${i + 1}: ${result.message}`
           );
           console.log(`[unify] EXIT (error)`);
-          return result;
+          // Add more context to the error message if returning it
+          return new Error(`Parameter ${i + 1} type mismatch: Expected '${type1.paramTypes[i].toString()}' but got '${type2.paramTypes[i].toString()}'. ${result.message}`);
         }
       }
+
       console.log(`  > Recursively unifying return types`);
       let returnResult: ChicoryType | Error;
       if (type1.returnType === UnitType) {
         // If the expected return type is UnitType (void), any actual return type is acceptable.
-        // The unification of return types is considered successful.
-        // We use type1.returnType (UnitType) as the "result" for this step,
-        // signifying compatibility without error.
         console.log(`  > Expected return is UnitType. Allowing actual return type '${type2.returnType.toString()}'. Compatibility success.`);
-        returnResult = type1.returnType; 
+        returnResult = type1.returnType;
       } else {
         // Standard unification for non-void expected return types.
         returnResult = this.unify(
           type1.returnType,
           type2.returnType,
-          substitution // `substitution` contains bindings from param unification
+          substitution
         );
       }
 
@@ -643,12 +649,10 @@ export class ChicoryTypeChecker {
           `[unify] ERROR: Failed unifying function return type: ${returnResult.message}`
         );
         console.log(`[unify] EXIT (error)`);
-        return returnResult; // Propagate the error if actual unification failed (for non-void expected returns)
+        return returnResult;
       }
       // Pass empty visited set
-      // The overall unified function type is based on type1 (the expected type),
-      // with its type variables substituted according to the unification.
-      const unifiedType = this.applySubstitution(type1, substitution, new Set()); 
+      const unifiedType = this.applySubstitution(type1, substitution, new Set());
       console.log(`[unify] SUCCESS: Unified FunctionType ${unifiedType.toString()}`);
       console.log(`[unify] EXIT`);
       return unifiedType;
@@ -2492,7 +2496,7 @@ export class ChicoryTypeChecker {
             // Type: ( (T) => U ) => U[]
             const callbackReturnTypeVar = this.newTypeVar();
             const callbackType = new FunctionType(
-              [elementType],
+              [elementType, NumberType],
               callbackReturnTypeVar
             );
             resultType = new FunctionType(
@@ -2502,8 +2506,11 @@ export class ChicoryTypeChecker {
             break;
           }
           case "filter": {
-            // Type: ( (T) => boolean ) => T[]
-            const callbackType = new FunctionType([elementType], BooleanType);
+            // Type: ( (T, number) => boolean ) => T[]
+            const callbackType = new FunctionType([
+              elementType,
+              NumberType
+            ], BooleanType);
             resultType = new FunctionType(
               [callbackType],
               new ArrayType(elementType) // Returns array of the *original* element type
@@ -2511,10 +2518,10 @@ export class ChicoryTypeChecker {
             break;
           }
           case "reduce": {
-            // Type: ( (Acc, T) => Acc, Acc ) => Acc
+            // Type: ( (Acc, T, number) => Acc, Acc ) => Acc
             const accumulatorTypeVar = this.newTypeVar();
             const callbackType = new FunctionType(
-              [accumulatorTypeVar, elementType],
+              [accumulatorTypeVar, elementType, NumberType],
               accumulatorTypeVar
             );
             resultType = new FunctionType(
@@ -3559,7 +3566,7 @@ export class ChicoryTypeChecker {
     let funcArity = 0;
 
     if (ctx instanceof parser.ParenFunctionExpressionContext && ctx.parameterList()) {
-        funcArity = ctx.parameterList()!.IDENTIFIER().length;
+        funcArity = ctx.parameterList()!.idOrWild().length;
     } else if (ctx instanceof parser.ParenlessFunctionExpressionContext) {
         funcArity = 1;
     }
@@ -3579,21 +3586,36 @@ export class ChicoryTypeChecker {
 
 
     if (ctx instanceof parser.ParenFunctionExpressionContext && ctx.parameterList()) {
-        ctx.parameterList()!.IDENTIFIER().forEach((paramNode, index) => {
+        ctx.parameterList()!.idOrWild().forEach((paramNode, index) => {
             const paramName = paramNode.getText();
             const paramType = (expectedParamTypesFromContext && expectedParamTypesFromContext[index])
                 ? expectedParamTypesFromContext[index]
-                : this.newTypeVar(`T_param_${paramName}`);
-            this.environment.declare(paramName, paramType, ctx, (str) => this.reportError(str, ctx));
+                : this.newTypeVar(paramName === "_" ? `T_ignored_${index}` : `T_param_${paramName}`);
+
+            if (paramName !== "_") {
+                this.environment.declare(paramName, paramType, ctx, (str) => this.reportError(str, ctx));
+            } else {
+                // For '_', we still need to track its type for the function signature,
+                // but we don't declare it in the environment.
+                // This allows multiple '_' parameters.
+                // Add a hint for '_' to show its inferred type.
+                this.hints.push({ context: paramNode, type: paramType.toString() });
+            }
             actualParamTypes.push(paramType);
         });
     } else if (ctx instanceof parser.ParenlessFunctionExpressionContext) {
-        const paramNode = ctx.IDENTIFIER();
+        const paramNode = ctx.idOrWild();
         const paramName = paramNode.getText();
         const paramType = (expectedParamTypesFromContext && expectedParamTypesFromContext[0])
             ? expectedParamTypesFromContext[0]
-            : this.newTypeVar(`T_param_${paramName}`);
-        this.environment.declare(paramName, paramType, ctx, (str) => this.reportError(str, ctx));
+            : this.newTypeVar(paramName === "_" ? `T_ignored_0` : `T_param_${paramName}`);
+
+        if (paramName !== "_") {
+            this.environment.declare(paramName, paramType, ctx, (str) => this.reportError(str, ctx));
+        } else {
+            // For '_', add a hint to show its inferred type.
+            this.hints.push({ context: paramNode, type: paramType.toString() });
+        }
         actualParamTypes.push(paramType);
     }
 

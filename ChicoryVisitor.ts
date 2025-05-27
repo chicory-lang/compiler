@@ -474,7 +474,7 @@ export class ChicoryParserVisitor {
     ) {
       params.push(...this.visitParameterList(ctx.parameterList()!));
     } else if (ctx instanceof parser.ParenlessFunctionExpressionContext) {
-      params.push(ctx.IDENTIFIER().getText());
+      params.push(ctx.idOrWild().getText());
     }
 
     // @ts-expect-error TS can't tell that ctx will always have an expr. But we know it will because there are only two options and both have one expr.
@@ -485,7 +485,7 @@ export class ChicoryParserVisitor {
   }
 
   visitParameterList(ctx: parser.ParameterListContext): string[] {
-    return ctx.IDENTIFIER().map((id) => id.getText());
+    return ctx.idOrWild().map((id) => id.getText());
   }
 
   visitCallExpr(ctx: parser.CallExprContext): string {
