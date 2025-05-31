@@ -71,3 +71,30 @@ match (a[0]) {
 // });
 
 // TODO: add tests for map, filter, find ...
+test('should allow map on arrays', () => {
+    const code = `const b = [1,2,3].map(x => x * 2)`;
+    const result = compile(code);
+    expect(result.errors).toHaveLength(0);
+    expect(result.code).toContain('const b = [1, 2, 3].map((x) => x * 2);');
+});
+
+test('should correctly type the index in filter (and produce an error if appropriate)', () => {
+    const code = `const a = [1,2].filter((_, i) => i == "asdf")`;
+    const result = compile(code);
+    expect(result.errors).toHaveLength(1);
+});
+test('should correctly type the index in filter', () => {
+    const code = `const a = [1,2].filter((_, i) => i == 1)`;
+    const result = compile(code);
+    expect(result.errors).toHaveLength(0);
+});
+test('should correctly type the index in map (and produce an error if appropriate)', () => {
+    const code = `const a = [1,2].map((_, i) => i == "asdf")`;
+    const result = compile(code);
+    expect(result.errors).toHaveLength(1);
+});
+test('should correctly type the index in map', () => {
+    const code = `const a = [1,2].map((_, i) => i == 1)`;
+    const result = compile(code);
+    expect(result.errors).toHaveLength(0);
+});

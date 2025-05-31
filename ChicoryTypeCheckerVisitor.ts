@@ -3578,17 +3578,17 @@ export class ChicoryTypeChecker {
     }
 
     if (expectedType instanceof FunctionType) {
-        if (expectedType.paramTypes.length === funcArity) {
-            expectedParamTypesFromContext = expectedType.paramTypes;
-            expectedReturnTypeFromContext = expectedType.returnType;
-            console.log(`[visitFuncExpr] Using expected types for params: [${expectedParamTypesFromContext.map(p => p.toString()).join(', ')}], expected return: ${expectedReturnTypeFromContext.toString()}`);
-        } else {
-            this.reportError(
-                `Function expression has ${funcArity} parameters, but context expects a function with ${expectedType.paramTypes.length} parameters. Parameter types will be inferred.`,
-                ctx
-            );
-        }
-    }
+      if (funcArity <= expectedType.paramTypes.length) {
+          expectedParamTypesFromContext = expectedType.paramTypes;
+          expectedReturnTypeFromContext = expectedType.returnType;
+          console.log(`[visitFuncExpr] Using expected types for params (up to arity ${funcArity}): [${expectedParamTypesFromContext.slice(0, funcArity).map(p => p.toString()).join(', ')}], expected return: ${expectedReturnTypeFromContext.toString()}`);
+      } else {
+          this.reportError(
+              `Function expression provides ${funcArity} parameters, but context expects a function with only ${expectedType.paramTypes.length} parameters.`,
+              ctx
+          );
+      }
+  }
 
 
     if (ctx instanceof parser.ParenFunctionExpressionContext && ctx.parameterList()) {
@@ -3717,13 +3717,20 @@ export class ChicoryTypeChecker {
     // visitExpr uses/updates this.currentSubstitution internally for argument inference.
     console.log(`  > Visiting arguments...`);
     const argumentTypes = ctx.expr()
-      ? ctx.expr().map((expr, i) => {
-          console.log(`    > Visiting arg ${i + 1}: ${expr.getText()}`);
-          const argType = this.visitExpr(expr);
-          console.log(`    > Arg ${i + 1} type (raw): ${argType.toString()}`);
-          return argType;
-        })
-      : [];
+         ? ctx.expr().map((expr, i) => {
+             console.log(`    > Visiting arg ${i + 1}: ${expr.getText()}`);
+             // Get the expected type for this specific argument from the function's signature
+             const expectedArgType = funcType.paramTypes.length > i ? funcType.paramTypes[i] : undefined;
+             if (expectedArgType) {
+               console.log(`    > Expected type for arg ${i + 1}: ${expectedArgType.toString()}`);
+             } else {
+               console.log(`    > No specific expected type for arg ${i + 1} (or arity mismatch).`);
+             }
+             const argType = this.visitExpr(expr, expectedArgType); // Pass down the expected type
+             console.log(`    > Arg ${i + 1} type (raw, after visitExpr): ${argType.toString()}`);
+             return argType;
+           })
+         : [];
     console.log(`  > Finished visiting arguments.`);
     console.log(
       `  currentSubstitution (after visiting args):`,
