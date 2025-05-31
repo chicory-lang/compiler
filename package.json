@@ -1,6 +1,6 @@
 {
   "name": "@chicory-lang/compiler",
-  "version": "0.0.31",
+  "version": "0.0.32",
   "description": "A compiler for the Chicory language.",
   "scripts": {
     "antlr": "antlr4ng -Dlanguage=TypeScript -o generated/ -visitor -Xexact-output-dir grammar/Chicory.g4",
