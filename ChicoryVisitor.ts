@@ -474,7 +474,9 @@ export class ChicoryParserVisitor {
     ) {
       params.push(...this.visitParameterList(ctx.parameterList()!));
     } else if (ctx instanceof parser.ParenlessFunctionExpressionContext) {
-      params.push(ctx.idOrWild().getText());
+      params.push(ctx.IDENTIFIER().getText());
+    } else if (ctx instanceof parser.ParenFunctionExpressionWildcardContext || ctx instanceof parser.ParenlessFunctionExpressionWildcardContext) {
+      params.push("_");
     }
 
     // @ts-expect-error TS can't tell that ctx will always have an expr. But we know it will because there are only two options and both have one expr.

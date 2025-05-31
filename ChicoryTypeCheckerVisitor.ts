@@ -2594,6 +2594,12 @@ export class ChicoryTypeChecker {
             resultType = new FunctionType([elementType], BooleanType);
             break;
           }
+          case "concat": {
+            // Type: (T[]) => T[] (Concatenates another array of the same element type)
+            const otherArrayType = new ArrayType(elementType);
+            resultType = new FunctionType([otherArrayType], new ArrayType(elementType));
+            break;
+          }
           default:
             this.reportError(
               `Member '${memberName}' not found on array type '${accessTargetType}'`, // Use accessTargetType
@@ -3604,7 +3610,7 @@ export class ChicoryTypeChecker {
             actualParamTypes.push(paramType);
         });
     } else if (ctx instanceof parser.ParenlessFunctionExpressionContext) {
-        const paramNode = ctx.idOrWild();
+        const paramNode = ctx.IDENTIFIER();
         const paramName = paramNode.getText();
         const paramType = (expectedParamTypesFromContext && expectedParamTypesFromContext[0])
             ? expectedParamTypesFromContext[0]
@@ -3614,10 +3620,14 @@ export class ChicoryTypeChecker {
             this.environment.declare(paramName, paramType, ctx, (str) => this.reportError(str, ctx));
         } else {
             // For '_', add a hint to show its inferred type.
-            this.hints.push({ context: paramNode, type: paramType.toString() });
+            this.hints.push({ context: ctx, type: paramType.toString() });
         }
         actualParamTypes.push(paramType);
-    }
+    } else if (ctx instanceof parser.ParenFunctionExpressionWildcardContext || ctx instanceof parser.ParenlessFunctionExpressionWildcardContext) {
+        const paramType = this.newTypeVar(`T_ignored_0`);
+        this.hints.push({ context: ctx, type: paramType.toString() });
+        actualParamTypes.push(paramType);
+    } 
 
     // Determine the expected type for the body based on the context, if available
     const bodyExpectedType = expectedReturnTypeFromContext ?? undefined;

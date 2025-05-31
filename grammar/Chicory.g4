@@ -152,7 +152,9 @@ justIfExpr
 
 funcExpr
     : '(' NL* parameterList? NL* ')' '=>' NL* expr  #ParenFunctionExpression
-    | idOrWild '=>' NL* expr                      #ParenlessFunctionExpression
+    | IDENTIFIER '=>' NL* expr                      #ParenlessFunctionExpression
+    | '(' '_' ')' '=>' NL* expr                     #ParenFunctionExpressionWildcard
+    | '_' '=>' NL* expr                             #ParenlessFunctionExpressionWildcard
     ;
 
 parameterList
