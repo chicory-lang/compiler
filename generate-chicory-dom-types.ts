@@ -340,6 +340,7 @@ async function main() {
   console.log(`    ${styleRecordTypeString}\n`);
 
   console.log(`    const commonHtmlAttributes = new Map([
+        ['key',     { type: StringType, optional: true }],
         ['class',   { type: StringType, optional: true }],
         ['className', { type: StringType, optional: true }],
         ['id',      { type: StringType, optional: true }],
