@@ -1297,6 +1297,8 @@ export class ChicoryTypeChecker {
   visitStmt(ctx: parser.StmtContext): ChicoryType {
     if (ctx.assignStmt()) {
       return this.visitAssignStmt(ctx.assignStmt()!);
+    } else if (ctx.mutateStmt()) {
+      return this.visitMutateStmt(ctx.mutateStmt()!);
     } else if (ctx.typeDefinition()) {
       return this.visitTypeDefinition(ctx.typeDefinition()!);
     } else if (ctx.importStmt()) {
@@ -1648,6 +1650,132 @@ export class ChicoryTypeChecker {
     }
 
     return rhsFinalType; // Return the type of the right-hand side
+  }
+
+  visitMutateStmt(ctx: parser.MutateStmtContext): ChicoryType {
+    const baseIdentifierName = ctx.IDENTIFIER().getText();
+    let currentLhsType = this.environment.getType(baseIdentifierName);
+    // currentLhsFinalPartCtx is the context of the specific part of the LHS being typed or assigned to.
+    // It starts as the base identifier and updates as we traverse member/index accesses.
+    let currentLhsFinalPartCtx: ParserRuleContext = ctx;
+
+    if (!currentLhsType) {
+      this.reportError(`Variable '${baseIdentifierName}' not found.`, ctx);
+      this.visitExpr(ctx.expr()); // Still visit RHS to find errors there
+      return UnitType; // Mutation statements are of type Unit
+    }
+
+    // Apply current substitutions to the initial LHS type
+    currentLhsType = this.applySubstitution(currentLhsType, this.currentSubstitution, new Set());
+
+    const tailExprs = ctx.identifierTailExpr();
+
+    for (const tail of tailExprs) {
+      if (currentLhsType === UnknownType) {
+        // If a previous step in resolving the LHS failed, stop.
+        break;
+      }
+      currentLhsFinalPartCtx = tail; // The current tail expression is the new final part of the LHS
+
+      if (tail instanceof parser.IdentifierTailMemberExpressionContext) {
+      const memberName = tail.IDENTIFIER().getText();
+      // Attempt to resolve currentLhsType to a RecordType, expanding aliases if necessary
+      const resolvedLhsType = this.resolveToRecordType(currentLhsType);
+
+      if (!(resolvedLhsType instanceof RecordType)) {
+        this.reportError(`Cannot access property '${memberName}' on non-record type '${currentLhsType}'.`, tail);
+        currentLhsType = UnknownType;
+        continue; // Skip to next tail or exit loop if currentLhsType is Unknown
+      }
+
+      const fieldInfo = resolvedLhsType.fields.get(memberName);
+      if (!fieldInfo) {
+        this.reportError(`Property '${memberName}' does not exist on type '${resolvedLhsType}'.`, tail);
+        currentLhsType = UnknownType;
+        continue;
+      }
+      // The type of the location is T, not Option<T>, even if optional.
+      // Optionality affects read (becomes Option<T>) and construction (can be omitted).
+      // For mutation, we're assigning a T.
+      currentLhsType = fieldInfo.type;
+
+      } else if (tail instanceof parser.IdentifierTailIndexExpressionContext) {
+      const indexExprCtx = tail.expr();
+      const indexType = this.visitExpr(indexExprCtx); // Type check the index expression
+      const substitutedIndexType = this.applySubstitution(indexType, this.currentSubstitution, new Set());
+
+      // Index must be a number
+      if (substitutedIndexType !== NumberType) {
+        const unificationResult = this.unify(substitutedIndexType, NumberType, this.currentSubstitution);
+        if (unificationResult instanceof Error) {
+        this.reportError(`Index expression must be of type 'number', but got '${substitutedIndexType}'.`, indexExprCtx);
+        currentLhsType = UnknownType;
+        continue;
+        }
+        // If unification succeeded, substitutions make it effectively NumberType
+      }
+
+      if (currentLhsType instanceof ArrayType) {
+        currentLhsType = currentLhsType.elementType;
+      } else if (currentLhsType instanceof TupleType) {
+        // Tuple indices must be literal numbers for type checking mutation
+        const primaryExpr = indexExprCtx.primaryExpr()
+        if (primaryExpr instanceof parser.LiteralExpressionContext && primaryExpr.literal() instanceof parser.NumberLiteralContext) {
+          const indexValue = parseInt(primaryExpr.literal().getText());
+          if (indexValue >= 0 && indexValue < currentLhsType.elementTypes.length) {
+            currentLhsType = currentLhsType.elementTypes[indexValue];
+          } else {
+            this.reportError(`Tuple index ${indexValue} out of bounds for type '${currentLhsType}'.`, indexExprCtx);
+            currentLhsType = UnknownType;
+            continue;
+          }
+        } else {
+        this.reportError(`Tuple index for mutation must be a literal number to determine its type.`, indexExprCtx);
+        currentLhsType = UnknownType;
+        continue;
+        }
+      } else {
+        this.reportError(`Cannot index into non-array/non-tuple type '${currentLhsType}'.`, tail);
+        currentLhsType = UnknownType;
+        continue;
+      }
+      }
+      // Apply substitutions that might have occurred from type-checking index expressions, etc.
+      currentLhsType = this.applySubstitution(currentLhsType, this.currentSubstitution, new Set());
+    }
+
+    // If an error occurred while resolving the LHS path, currentLhsType will be UnknownType
+    if (currentLhsType === UnknownType) {
+      this.visitExpr(ctx.expr()); // Still visit RHS to find errors there
+      return UnitType;
+    }
+
+    // currentLhsType is now the type of the location being assigned to.
+    // Type check the RHS expression, providing currentLhsType as the expected type for better inference.
+    const valueExprCtx = ctx.expr();
+    const providedValueType = this.visitExpr(valueExprCtx, currentLhsType);
+    const substitutedValueType = this.applySubstitution(providedValueType, this.currentSubstitution, new Set());
+
+    // Unify the type of the location (expected, currentLhsType)
+    // with the type of the value being assigned (provided, substitutedValueType).
+    const unificationResult = this.unify(currentLhsType, substitutedValueType, this.currentSubstitution);
+
+    if (unificationResult instanceof Error) {
+      this.reportError(
+      `Type mismatch: Cannot assign value of type '${substitutedValueType}' to a location of type '${currentLhsType}'. ${unificationResult.message}`,
+      valueExprCtx // Report error on the RHS expression
+      );
+    } else {
+      // Unification successful. `this.currentSubstitution` has been updated.
+      // The final type of the location, after unification, can be found by re-applying substitutions.
+      const finalTargetType = this.applySubstitution(unificationResult, this.currentSubstitution, new Set());
+      this.hints.push({ context: currentLhsFinalPartCtx, type: finalTargetType.toString() });
+      // Also add hint for the expression being assigned, it should now conform to finalTargetType
+      this.hints.push({ context: valueExprCtx, type: finalTargetType.toString() });
+      this.setExpressionType(valueExprCtx, finalTargetType); // Update RHS expression type
+    }
+
+    return UnitType; // Mutation statements are of type Unit
   }
 
   private visitTypeDefinition(ctx: parser.TypeDefinitionContext): ChicoryType {

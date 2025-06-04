@@ -55,3 +55,29 @@ test("tuple destructuring assignment", () => {
   expect(code).toBe("let [ a, b, c ] = [true, \"false\", 3];");
   expect(errors.length).toBe(0)
 });
+
+test("should allow assignment to a mutable variable", () => {
+  const { code, errors } = compile(`let a = 1
+a = 2`)
+  expect(code).toBe("let a = 1;\na = 2;")
+  expect(errors.length).toBe(0)
+})
+
+test("should not allow assignment to a mutable variable when wrong type", () => {
+  const { code, errors } = compile(`let a = 1
+a = "b"`)
+  expect(errors.length).toBeGreaterThan(0)
+})
+
+test("should allow assignment to a mutable variable in record", () => {
+  const { code, errors } = compile(`let a = { b: "c" }
+a.b = "d"`)
+  expect(code).toBe("let a = { b: \"c\" };\na.b = \"d\";")
+  expect(errors.length).toBe(0)
+})
+
+test("should not allow assignment to a mutable variable in record when wrong type", () => {
+  const { code, errors } = compile(`let a = { b: "c" }
+a.b = 3`)
+  expect(errors.length).toBeGreaterThan(0)
+})

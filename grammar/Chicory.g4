@@ -6,6 +6,7 @@ program
 
 stmt
     : assignStmt
+    | mutateStmt
     | typeDefinition
     | importStmt
     | globalStmt
@@ -14,6 +15,13 @@ stmt
 
 assignStmt
     : assignKwd assignTarget (':' typeExpr)? '=' expr
+    ;
+
+mutateStmt: IDENTIFIER identifierTailExpr* '=' expr;
+
+identifierTailExpr
+    : '.' IDENTIFIER    #IdentifierTailMemberExpression
+    | '[' expr ']'      #IdentifierTailIndexExpression
     ;
 
 // TODO: Force type identifier to begin with uppercase letter

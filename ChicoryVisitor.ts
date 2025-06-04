@@ -93,6 +93,8 @@ export class ChicoryParserVisitor {
     } else if (ctx.globalStmt()) {
       // We only need global statements to type check references to identifiers in the global scope
       // The identifiers compile 1:1 so we don't need to do anything here
+    } else if (ctx.mutateStmt()) {
+      resultJs = `${this.visitMutateStmt(ctx.mutateStmt()!)};`;
     } else if (ctx.expr()) {
       resultJs = `${this.visitExpr(ctx.expr()!)};`;
     } else {
@@ -136,6 +138,34 @@ export class ChicoryParserVisitor {
       );
     }
     return `${this.indent()}${assignKwd} ${targetJs} = ${expr}`;
+  }
+
+  visitMutateStmt(ctx: parser.MutateStmtContext): string {
+    const baseIdentifierName = ctx.IDENTIFIER().getText();
+    let lhsJs = baseIdentifierName;
+
+    const tailExprs = ctx.identifierTailExpr();
+    // The type checker already has the types for these expressions,
+    // so we retrieve them to pass to compileTailExpr if needed.
+    let currentLhsType = this.expressionTypes.get(ctx);
+
+    for (const tail of tailExprs) {
+      // In the compiler, we primarily construct the JS string.
+      // The type of the base (lhsJs so far) might be needed if compileTailExpr
+      // has different strategies based on type (e.g. for array index Option wrapping).
+      // However, for simple mutation, direct JS translation is often enough.
+      if (tail instanceof parser.IdentifierTailMemberExpressionContext) {
+        lhsJs += `.${tail.IDENTIFIER().getText()}`;
+        currentLhsType = this.expressionTypes.get(tail);
+      } else if (tail instanceof parser.IdentifierTailIndexExpressionContext) {
+        const indexExprJs = this.visitExpr(tail.expr());
+        lhsJs += `[${indexExprJs}]`;
+        currentLhsType = this.expressionTypes.get(tail);
+      }
+    }
+
+    const rhsJs = this.visitExpr(ctx.expr());
+    return `${this.indent()}${lhsJs} = ${rhsJs}`;
   }
 
   visitExportStmt(ctx: parser.ExportStmtContext): string {
@@ -258,6 +288,7 @@ export class ChicoryParserVisitor {
   // Add expectedType parameter
   visitExpr(ctx: parser.ExprContext, expectedType?: ChicoryType): string { // Added expectedType
     // Get the type of the primary expression from the map
+    console.log(ctx.getText())
     const primaryExprCtx = ctx.primaryExpr();
     // Pass expectedType down to primary expression visitor
     let currentJs = this.visitPrimaryExpr(primaryExprCtx, expectedType);
