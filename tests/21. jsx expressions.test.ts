@@ -79,3 +79,14 @@ test("should not throw errors when using typical attributes on html elements", (
 
   expect(errors.length).toBe(0)
 });
+
+test("should not throw when mapping across an unknown array", () => {
+  const chicoryCode = `const arr = []
+const el = () => <div>{arr.map(a => <p>{a}</p>)}</div>`
+
+  const { code, errors, hints } = compile(chicoryCode);
+
+  expect(errors.length).toBe(0)
+  expect(code).toContain('const el = () => <div>{arr.map((a) => <p>{a}</p>)}</div>;');
+});
+

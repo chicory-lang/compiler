@@ -473,7 +473,6 @@ export class ChicoryTypeChecker {
         `  > Setting substitution: '${type1.name}' -> '${type2.toString()}'`
       );
       substitution.set(type1.id, type2);
-      console.log(`  substitution (out):`, new Map(substitution)); // Log updated map
       console.log(`[unify] SUCCESS: Bound TypeVariable.`);
       console.log(`[unify] EXIT`);
       return type2; // Return the unified type
@@ -838,7 +837,6 @@ export class ChicoryTypeChecker {
       const varId = type.id; // Use varId consistently
       const varName = type.name;
       console.log(`[applySubst TV] Trying to substitute ${varName}(id=${varId}).`);
-      console.log(`  > Substitution map provided:`, new Map(substitution));
 
       if (substitution.has(varId)) { // Use varId
         const mappedType = substitution.get(varId)!; // Use varId
@@ -3417,7 +3415,8 @@ export class ChicoryTypeChecker {
       // It doesn't make sense to assume an empty tuple, since they have a fixed number of elements.
       // So, defaulting to ArrayType<Unknown>.
       // Unification might resolve Unknown later if assigned or used.
-      const emptyArrayType = new ArrayType(UnknownType); // Default empty array to Array<unknown>
+      const freshElementType = this.newTypeVar("T_array_element");
+      const emptyArrayType = new ArrayType(freshElementType); // Default empty array to Array<unknown>
       this.hints.push({
         context: ctx,
         type: emptyArrayType.toString(),
@@ -3824,8 +3823,7 @@ export class ChicoryTypeChecker {
     }
 
     console.log(`  > Argument unification successful.`);
-    console.log(`  > Final callSubstitution:`, new Map(callSubstitution));
-
+    
     // Calculate the final return type by applying the call-specific substitution (`callSubstitution`)
     // to the function's declared return type.
     console.log(
@@ -4901,20 +4899,56 @@ export class ChicoryTypeChecker {
           openingElement // Report error on the opening tag
         );
       }
-
+      
       // Handle children
       ctx.jsxChild().forEach(child => {
         if (child instanceof parser.JsxChildJsxContext) {
           this.visitJsxExpr(child.jsxExpr());
         } else if (child instanceof parser.JsxChildExpressionContext) {
           // Type check the expression within { ... }
-          // Expected type for a child expression is JsxElementType or StringType.
           const childExprType = this.visitExpr(child.expr());
           const substitutedChildExprType = this.applySubstitution(childExprType, this.currentSubstitution, new Set());
 
-          if (!(substitutedChildExprType instanceof JsxElementType || substitutedChildExprType === StringType || substitutedChildExprType === NumberType)) {
+          // Check if it's a valid JSX child type
+          let isValidJsxChild = false;
+          
+          // Check for JSX element
+          if (substitutedChildExprType instanceof JsxElementType) {
+            isValidJsxChild = true;
+          }
+          // Check for string or number
+          else if (substitutedChildExprType === StringType || substitutedChildExprType === NumberType) {
+            isValidJsxChild = true;
+          }
+          // Check for array of JSX elements (this is the key addition)
+          else if (substitutedChildExprType instanceof ArrayType && substitutedChildExprType.elementType instanceof JsxElementType) {
+            isValidJsxChild = true;
+          }
+          // Try to unify with valid types as a fallback for type variables
+          else if (substitutedChildExprType instanceof TypeVariable) {
+            // Try string first
+            const stringUnification = this.unify(substitutedChildExprType, StringType, this.currentSubstitution);
+            if (!(stringUnification instanceof Error)) {
+              isValidJsxChild = true;
+            } else {
+              // Try number
+              const numberUnification = this.unify(substitutedChildExprType, NumberType, this.currentSubstitution);
+              if (!(numberUnification instanceof Error)) {
+                isValidJsxChild = true;
+              } else {
+                // Try JSX element
+                const jsxElementVar = this.newTypeVar("JSXElement");
+                const jsxElementUnification = this.unify(substitutedChildExprType, jsxElementVar, this.currentSubstitution);
+                if (!(jsxElementUnification instanceof Error)) {
+                  isValidJsxChild = true;
+                }
+              }
+            }
+          }
+          
+          if (!isValidJsxChild) {
             this.reportError(
-              `JSX child expressions must evaluate to a JSX element, a string, or a number. Found type: '${substitutedChildExprType.toString()}'.`,
+              `JSX child expressions must evaluate to a JSX element, a string, a number, or an array of JSX elements. Found type: '${substitutedChildExprType.toString()}'.`,
               child.expr()
             );
           }
@@ -4923,6 +4957,7 @@ export class ChicoryTypeChecker {
           // jsxText nodes are typically not type-checked in this manner unless specific rules apply.
         }
       });
+
     } else if (ctx.jsxSelfClosingElement()) {
       selfClosingElement = ctx.jsxSelfClosingElement()!;
       tagName = selfClosingElement.IDENTIFIER().getText();
