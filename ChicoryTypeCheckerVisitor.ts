@@ -134,14 +134,17 @@ export class ChicoryTypeChecker {
 
     // Add Option type itself
     this.environment.declare(optionTypeName, optionGenericType, null, (err) =>
-      console.error("Prelude Error:", err)
+      console.error("Prelude Error:", err),
+      [optionTypeVarT]
     );
     // Add Constructors as functions in the environment
     this.environment.declare(someName, someType, null, (err) =>
-      console.error("Prelude Error:", err)
+      console.error("Prelude Error:", err),
+      [optionTypeVarT]
     );
     this.environment.declare(noneName, noneType, null, (err) =>
-      console.error("Prelude Error:", err)
+      console.error("Prelude Error:", err),
+      [optionTypeVarT]
     );
 
     // Add constructor definitions for the type checker's ADT logic
@@ -179,14 +182,17 @@ export class ChicoryTypeChecker {
 
     // Add Result type itself to the environment
     this.environment.declare(resultTypeName, resultGenericType, null, (err) =>
-      console.error("Prelude Error (Result Type):", err)
+      console.error("Prelude Error (Result Type):", err),
+      [typeVarResT, typeVarResE]
     );
     // Add Constructors as functions in the environment
     this.environment.declare(okName, okType, null, (err) =>
-      console.error("Prelude Error (Ok Constructor):", err)
+      console.error("Prelude Error (Ok Constructor):", err),
+      [typeVarResT]
     );
     this.environment.declare(errName, errType, null, (err) =>
-      console.error("Prelude Error (Err Constructor):", err)
+      console.error("Prelude Error (Err Constructor):", err),
+      [typeVarResE]
     );
 
     // Add constructor definitions for the type checker's ADT logic
@@ -206,7 +212,7 @@ export class ChicoryTypeChecker {
       ) => {
         // Prefix the tag name
         const jsxIntrinsicName = JSX_INTRINSIC_PREFIX + identifier;
-        originalDeclare(jsxIntrinsicName, type, context, (err) => console.error(errorMessage,err));
+        originalDeclare(jsxIntrinsicName, type, context, (err) => console.error(errorMessage,err), []);
       };
 
       declareJsxTypes(jsxDeclare, {
@@ -222,7 +228,7 @@ export class ChicoryTypeChecker {
       console.log("[initializeJsxIntrinsics] Initialization complete.");
   }
 
-  private newTypeVar(name: string = `T${this.nextTypeVarId}`): TypeVariable {
+  private newTypeVar(name: string = `t${this.nextTypeVarId}`): TypeVariable {
     const id = this.nextTypeVarId++;
     return new TypeVariable(id, name);
   }
@@ -235,7 +241,7 @@ export class ChicoryTypeChecker {
     console.log(`[unify] ENTER`);
     console.log(`  type1: ${type1.toString()} (${type1.constructor.name})`);
     console.log(`  type2: ${type2.toString()} (${type2.constructor.name})`);
-    console.log(`  substitution (in):`, new Map(substitution)); // Log a copy
+    console.log(`  substitution (in):`, JSON.stringify(new Map(substitution)).slice(0,80)); // Log a copy
 
     // Pass empty visited set as unify starts a new substitution context
     type1 = this.applySubstitution(type1, substitution, new Set());
@@ -403,7 +409,7 @@ export class ChicoryTypeChecker {
         `  > Setting substitution: '${type1.name}' -> '${type2.toString()}'`
       );
       substitution.set(type1.id, type2);
-      console.log(`  substitution (out):`, new Map(substitution));
+      console.log(`  substitution (out):`, JSON.stringify(new Map(substitution)).slice(0,80)); // Log a copy
       console.log(`[unify] SUCCESS: Bound GenericType (no args).`);
       console.log(`[unify] EXIT`);
       return type2;
@@ -1119,41 +1125,17 @@ export class ChicoryTypeChecker {
 
 
   // Helper function to instantiate a function type with fresh type variables
-  private instantiateFunctionType(funcType: FunctionType): FunctionType {
+  private instantiateFunctionType(funcType: FunctionType, genericParams: TypeVariable[]): FunctionType {
     console.log(`[instantiateFunctionType] ENTER`);
     console.log(`  funcType: ${funcType.toString()}`);
 
-    // Find all unique type variables within the function type signature
-    const typeVars = new Set<number>();
-    const findVars = (type: ChicoryType) => {
-      if (type instanceof TypeVariable) {
-        // Only consider variables not bound in the immediate environment
-        // For simplicity, we assume top-level constructor/function types need full instantiation.
-        // A more complex implementation might check environment depth.
-        typeVars.add(type.id);
-      } else if (type instanceof FunctionType) {
-        type.paramTypes.forEach(findVars);
-        findVars(type.returnType);
-      } else if (type instanceof ArrayType) {
-        findVars(type.elementType);
-      } else if (type instanceof TupleType) {
-        type.elementTypes.forEach(findVars);
-      } else if (type instanceof RecordType) {
-        Array.from(type.fields.values()).forEach(findVars);
-      } else if (type instanceof GenericType) {
-        type.typeArguments.forEach(findVars);
-      }
-    };
-    // Find variables in parameters and return type
-    funcType.paramTypes.forEach(findVars);
-    findVars(funcType.returnType);
-
     // Create a substitution map from old var names to fresh vars
     const substitution: SubstitutionMap = new Map();
-    typeVars.forEach((varId) => {
+    genericParams.forEach((param) => {
+      const varId = param.id;
       const freshVar = this.newTypeVar();
       console.log(
-        `  > Mapping type var '${varId}' to fresh var '${freshVar.name}'`
+        `  > Mapping type var '${param.name}(id=${varId})' to fresh var '${freshVar.name}'`
       );
       substitution.set(varId, freshVar);
     });
@@ -1510,7 +1492,8 @@ export class ChicoryTypeChecker {
       }
 
       this.environment.declare(identifierName, rhsFinalType, ctx, (str) =>
-        this.reportError(str, ctx)
+        this.reportError(str, ctx),
+        []
       );
       this.hints.push({ context: targetCtx, type: rhsFinalType.toString() });
       // Store the final type for the target context
@@ -1527,7 +1510,8 @@ export class ChicoryTypeChecker {
         patternCtx.IDENTIFIER().forEach((idNode) => {
           const idName = idNode.getText();
           this.environment.declare(idName, UnknownType, null, (str) =>
-            this.reportError(str, patternCtx)
+            this.reportError(str, patternCtx),
+            []
           );
           this.hints.push({
             context: ctx, // Hint context is the specific identifier
@@ -1559,7 +1543,8 @@ export class ChicoryTypeChecker {
               new Set()
             );
             this.environment.declare(idName, fieldType, null, (str) =>
-              this.reportError(str, patternCtx)
+              this.reportError(str, patternCtx),
+              []
             );
             this.hints.push({
               context: patternCtx,
@@ -1583,7 +1568,8 @@ export class ChicoryTypeChecker {
         identifiers.forEach((idNode) => {
           const idName = idNode.getText();
           this.environment.declare(idName, elementType, null, (str) =>
-            this.reportError(str, patternCtx)
+            this.reportError(str, patternCtx),
+            []
           );
           this.hints.push({
             context: ctx, // Hint context is the specific identifier
@@ -1618,7 +1604,8 @@ export class ChicoryTypeChecker {
           } else {
             // Error already reported about length mismatch, declare as Unknown
             this.environment.declare(idName, UnknownType, null, (str) =>
-              this.reportError(str, patternCtx)
+              this.reportError(str, patternCtx),
+              []
             );
             this.hints.push({
               context: ctx, // Hint context is the specific identifier
@@ -1635,7 +1622,8 @@ export class ChicoryTypeChecker {
         identifiers.forEach((idNode) => {
           const idName = idNode.getText();
           this.environment.declare(idName, UnknownType, null, (str) =>
-            this.reportError(str, patternCtx)
+            this.reportError(str, patternCtx),
+            []
           );
           this.hints.push({
             context: ctx, // Hint context is the specific identifier
@@ -1792,7 +1780,8 @@ export class ChicoryTypeChecker {
           const paramName = param.getText();
           const typeVar = new TypeVariable(this.nextTypeVarId++, paramName);
           this.environment.declare(paramName, typeVar, ctx, (str) =>
-            this.reportError(str, ctx)
+            this.reportError(str, ctx),
+            []
           );
           typeParams.push(typeVar);
         });
@@ -1822,7 +1811,8 @@ export class ChicoryTypeChecker {
 
     // Declare the type alias name in the environment using the determined finalType
     this.environment.declare(typeName, finalType, ctx, (str) =>
-      this.reportError(str, ctx)
+      this.reportError(str, ctx),
+      typeParams
     );
 
     // Pop the scope *before* declaring in the outer scope
@@ -1830,7 +1820,8 @@ export class ChicoryTypeChecker {
 
     // Declare the type alias name in the *outer* environment
     this.environment.declare(typeName, finalType, ctx, (str) =>
-        this.reportError(str, ctx)
+        this.reportError(str, ctx),
+        typeParams
     );
 
     // Return the finalType declared in the environment
@@ -1951,7 +1942,7 @@ export class ChicoryTypeChecker {
     } else if (ctx.literalUnionType()) { // Added before functionType
         return this.visitLiteralUnionType(ctx.literalUnionType()!, typeName, typeVarsInSig, typeParams);
     } else if (ctx.functionType()) {
-      return this.visitFunctionType(ctx.functionType()!);
+      return this.visitFunctionType(ctx.functionType()!, typeVarsInSig);
     } else if (ctx.genericTypeExpr()) {
       return this.visitGenericTypeExpr(ctx.genericTypeExpr()!, typeVarsInSig);
     } else if (ctx.recordType()) {
@@ -2000,12 +1991,15 @@ export class ChicoryTypeChecker {
     return new GenericType(this.nextTypeVarId++, typeName, typeArguments);
   }
 
-  private visitFunctionType(ctx: parser.FunctionTypeContext): ChicoryType {
-    // --- NEW: Scope and Map for Signature Vars ---
-    this.environment = this.environment.pushScope(); // Push scope for params FIRST
-    const typeVarsInSig = new Map<string, TypeVariable>(); // Track vars for this signature
-    // --- END NEW ---
-
+  private visitFunctionType(
+    ctx: parser.FunctionTypeContext,
+    outerTypeVarsInSig?: Map<string, TypeVariable>
+  ): ChicoryType {
+    this.environment = this.environment.pushScope();
+    const typeVarsInSig = outerTypeVarsInSig
+      ? new Map(outerTypeVarsInSig)
+      : new Map<string, TypeVariable>();
+    
     const paramTypes = ctx.typeParam()
       ? ctx.typeParam().map((p) => this.visitParameterType(p, typeVarsInSig)) // Pass map
       : [];
@@ -2016,10 +2010,8 @@ export class ChicoryTypeChecker {
       typeVarsInSig
     );
 
-    // --- NEW: Pop scope AFTER parsing everything ---
     this.environment = this.environment.popScope();
-    // --- END NEW ---
-
+    
     return new FunctionType(paramTypes, returnType);
   }
 
@@ -2058,7 +2050,8 @@ export class ChicoryTypeChecker {
         typeVarsInSig.set(name, typeVar);
         // Declare in the temporary environment scope too
         this.environment.declare(name, typeVar, ctx, (str) =>
-          this.reportError(str, ctx)
+          this.reportError(str, ctx),
+          []
         );
         console.log(
           `[visitParameterType] Parsed '${name}' as NEW TypeVariable for signature (using getText).` // Updated log
@@ -2140,7 +2133,7 @@ export class ChicoryTypeChecker {
         fieldType = this.visitTupleType(kv.tupleType()!, typeVarsInSig); // Pass map
       } else if (kv.functionType()) {
         // visitFunctionType creates its own scope/map, doesn't need the outer one passed
-        fieldType = this.visitFunctionType(kv.functionType()!);
+        fieldType = this.visitFunctionType(kv.functionType()!, typeVarsInSig);
       } else if (kv.genericTypeExpr()) {
         fieldType = this.visitGenericTypeExpr(kv.genericTypeExpr()!, typeVarsInSig); // Pass map
       } else if (kv.IDENTIFIER()?.length > 1) { // Handles simple Identifier like 'User' or 'T'
@@ -2222,7 +2215,6 @@ export class ChicoryTypeChecker {
             // This case should ideally not be hit if grammar for AdtTypeAnnotation is correctly parsed
             // or if it's not an IDENTIFIER type. Could be another typeExpr.
             // For now, if it's not primitive and not a clear IDENTIFIER type, report error or handle other typeExprs.
-            // This part might need more robust handling if AdtTypeAnnotation can be complex typeExpr.
             // Assuming AdtTypeAnnotation's IDENTIFIER rule implies the type is an identifier.
             this.reportError(`Invalid type in ADT constructor field '${fieldName}'. Expected primitive or type identifier.`, annotation);
             fieldType = UnknownType;
@@ -2309,12 +2301,16 @@ export class ChicoryTypeChecker {
     if (ctx instanceof parser.BindStatementContext) {
       if (ctx.IDENTIFIER()) {
         // There will definitely be a typeExpr if there is an IDENTIFIER (for bind statements)
-        const type = this.visitTypeExpr(ctx.typeExpr()!);
+        const typeExprCtx = ctx.typeExpr()!;
+        const typeVarsInSig = new Map<string, TypeVariable>();
+        const type = this.visitTypeExpr(typeExprCtx, undefined, typeVarsInSig);
+        const genericParams = Array.from(typeVarsInSig.values());
         this.environment.declare(
           ctx.IDENTIFIER()!.getText(),
           type,
           ctx,
-          (str) => this.reportError(str, ctx)
+          (str) => this.reportError(str, ctx),
+          genericParams
         );
       }
 
@@ -2324,9 +2320,13 @@ export class ChicoryTypeChecker {
           .bindingIdentifier()
           .forEach((bindingId) => {
             const id = bindingId.IDENTIFIER().getText();
-            const type = this.visitTypeExpr(bindingId.typeExpr());
+            const typeExprCtx = bindingId.typeExpr();
+            const typeVarsInSig = new Map<string, TypeVariable>();
+            const type = this.visitTypeExpr(typeExprCtx, undefined, typeVarsInSig);
+            const genericParams = Array.from(typeVarsInSig.values());
             this.environment.declare(id, type, ctx, (str) =>
-              this.reportError(str, ctx)
+              this.reportError(str, ctx),
+              genericParams
             );
           });
       }
@@ -2420,7 +2420,8 @@ export class ChicoryTypeChecker {
               // TODO: Handle potential generic instantiation if needed here?
               // For now, declare with the type as stored in exports.
               this.environment.declare(importName, importedType, null, (str) =>
-                this.reportError(str, ctx)
+                this.reportError(str, ctx),
+                []
               );
               this.hints.push({
                 context: ctx,
@@ -2433,7 +2434,8 @@ export class ChicoryTypeChecker {
               );
               // Declare as Unknown to prevent cascade errors
               this.environment.declare(importName, UnknownType, null, (str) =>
-                this.reportError(str, ctx)
+                this.reportError(str, ctx),
+                []
               );
             }
           });
@@ -2456,7 +2458,8 @@ export class ChicoryTypeChecker {
           .forEach((idNode) => {
             const importName = idNode.getText();
             this.environment.declare(importName, UnknownType, null, (str) =>
-              this.reportError(str, ctx)
+              this.reportError(str, ctx),
+              []
             );
           });
       }
@@ -2494,9 +2497,13 @@ export class ChicoryTypeChecker {
   visitGlobalStmt(ctx: parser.GlobalStmtContext): ChicoryType {
     // Global statements simply define the type of the identifier and compile that identifier 1:1
     const id = ctx.IDENTIFIER()
-    const type = this.visitTypeExpr(ctx.typeExpr()!);
+    const typeExprCtx = ctx.typeExpr()!;
+    const typeVarsInSig = new Map<string, TypeVariable>();
+    const type = this.visitTypeExpr(typeExprCtx, undefined, typeVarsInSig);
+    const genericParams = Array.from(typeVarsInSig.values());
     this.environment.declare(id.getText(), type, ctx, (str) =>
-      this.reportError(str, ctx)
+      this.reportError(str, ctx),
+      genericParams
     );
     return UnitType;
   }
@@ -2721,9 +2728,10 @@ export class ChicoryTypeChecker {
             break;
           }
           case "concat": {
-            // Type: (T[]) => T[] (Concatenates another array of the same element type)
-            const otherArrayType = new ArrayType(elementType);
-            resultType = new FunctionType([otherArrayType], new ArrayType(elementType));
+            // Type: (T | T[]) => T[] (Concatenates another array of the same element type, or a single element)
+            // This is a simplification. A full implementation would use union types or overloads.
+            // For now, we'll make it accept a single element, which is the common case for `addTodo`.
+            resultType = new FunctionType([elementType], new ArrayType(elementType));
             break;
           }
           default:
@@ -3072,36 +3080,20 @@ export class ChicoryTypeChecker {
           baseType instanceof TypeVariable ||
           rhsTypeSubstituted instanceof TypeVariable
         ) {
-          // If either operand is a type variable, try to unify them
+          // One is a variable, unify it with the other type.
           const result = this.unify(
             baseType,
             rhsTypeSubstituted,
             this.currentSubstitution
           );
-          if (!(result instanceof Error)) {
-            // Successfully unified the types
-            // Pass empty visited set
-            const unifiedType = this.applySubstitution(
-              baseType,
-              this.currentSubstitution,
-              new Set()
+          if (result instanceof Error) {
+            this.reportError(
+              `Operator '${operator}' cannot be applied to types '${baseType}' and '${rhsTypeSubstituted}': ${result.message}`,
+              ctx
             );
-
-            // Check if the unified type is a valid operand for comparison
-            if (
-              unifiedType === NumberType ||
-              unifiedType === StringType ||
-              unifiedType === BooleanType
-            ) {
-              return BooleanType;
-            }
+            return UnknownType;
           }
-
-          this.reportError(
-            `Operator '${operator}' cannot be applied to types '${baseType}' and '${rhsTypeSubstituted}'`,
-            ctx
-          );
-          return UnknownType;
+          return BooleanType;
         } else {
           this.reportError(
             `Operator '${operator}' cannot be applied to types '${baseType}' and '${rhsTypeSubstituted}'`,
@@ -3190,15 +3182,16 @@ export class ChicoryTypeChecker {
     console.log(`[visitIdentifier] ENTER: '${identifierName}'`);
 
     // 1. Check environment (variables, functions declared with let/const, etc.)
-    const envType = this.environment.getType(identifierName);
+    const entry = this.environment.getEntry(identifierName);
     console.log(
-      `  > Found in environment: ${envType ? envType.toString() : "null"}`
+      `  > Found in environment: ${entry ? entry.type.toString() : "null"}`
     );
-    if (envType) {
+    if (entry) {
+      const { type: envType, genericParams } = entry;
       // Apply substitutions to the type found in the environment
       console.log(
         `  > Applying current substitution to env type:`,
-        new Map(this.currentSubstitution)
+        JSON.stringify(new Map(this.currentSubstitution)).slice(0, 80)
       );
       // Pass empty visited set
       let substitutedType = this.applySubstitution(
@@ -3248,25 +3241,12 @@ export class ChicoryTypeChecker {
           `  > Substituted type is FunctionType. Checking if instantiation needed.`
         );
         // Check if it contains type variables that might need instantiation
-        let containsTypeVars = false;
-        const checkVars = (t: ChicoryType) => {
-          if (t instanceof TypeVariable) containsTypeVars = true;
-          else if (t instanceof FunctionType) {
-            t.paramTypes.forEach(checkVars);
-            checkVars(t.returnType);
-          } else if (t instanceof ArrayType) checkVars(t.elementType);
-          else if (t instanceof TupleType) t.elementTypes.forEach(checkVars);
-          else if (t instanceof RecordType)
-            Array.from(t.fields.values()).forEach(checkVars);
-          else if (t instanceof GenericType) t.typeArguments.forEach(checkVars);
-        };
-        checkVars(substitutedType);
-        console.log(`  > Contains type vars? ${containsTypeVars}`);
+        console.log(`  > Contains generic params? ${genericParams.length > 0}`);
 
-        if (containsTypeVars) {
+        if (genericParams.length > 0) {
           // Potentially generic function found in env, instantiate it
           console.log(`  > Instantiating function type from environment.`);
-          substitutedType = this.instantiateFunctionType(substitutedType);
+          substitutedType = this.instantiateFunctionType(substitutedType, genericParams);
           console.log(
             `  > Instantiated function from env ${identifierName}: ${substitutedType}`
           );
@@ -3358,7 +3338,10 @@ export class ChicoryTypeChecker {
           //          in a value context like `{ makeSome: Some }` will correctly
           //          assign the function type `(T') => Option<T'>` to `makeSome`.
 
-          const adtDefinition = this.environment.getType(constructor.adtName);
+          const adtDefinitionEntry = this.environment.getEntry(constructor.adtName);
+          const adtDefinition = adtDefinitionEntry?.type;
+          const adtGenericParams = adtDefinitionEntry?.genericParams ?? [];
+
           console.log(
             `  > ADT definition for '${constructor.adtName}': ${
               adtDefinition ? adtDefinition.toString() : "null"
@@ -3369,7 +3352,7 @@ export class ChicoryTypeChecker {
           // Check if the ADT itself is generic. If so, instantiate the constructor's FUNCTION type.
           if (
             adtDefinition instanceof GenericType &&
-            adtDefinition.typeArguments.length > 0
+            adtGenericParams.length > 0
           ) {
             console.log(
               `  > ADT '${constructor.adtName}' is generic. Checking if constructor function needs instantiation.`
@@ -3400,7 +3383,8 @@ export class ChicoryTypeChecker {
                 `  > Instantiating non-nullary constructor function type.`
               );
               typeToReturn = this.instantiateFunctionType(
-                originalConstructorType
+                originalConstructorType as FunctionType,
+                adtGenericParams
               );
               console.log(
                 `  > Instantiated non-nullary generic constructor FUNCTION ${identifierName}: ${originalConstructorType} -> ${typeToReturn}`
@@ -3543,7 +3527,7 @@ export class ChicoryTypeChecker {
       // It doesn't make sense to assume an empty tuple, since they have a fixed number of elements.
       // So, defaulting to ArrayType<Unknown>.
       // Unification might resolve Unknown later if assigned or used.
-      const freshElementType = this.newTypeVar("T_array_element");
+      const freshElementType = this.newTypeVar("t_array_element");
       const emptyArrayType = new ArrayType(freshElementType); // Default empty array to Array<unknown>
       this.hints.push({
         context: ctx,
@@ -3695,11 +3679,6 @@ export class ChicoryTypeChecker {
   }
 
   visitFuncExpr(ctx: parser.FuncExprContext, expectedType?: ChicoryType): ChicoryType {
-    // Save the current substitution
-    const outerSubstitution = new Map(this.currentSubstitution);
-    // Create a fresh substitution for this function
-    this.currentSubstitution = new Map();
-
     this.environment = this.environment.pushScope(); // Push a new scope for function parameters
 
     const actualParamTypes: ChicoryType[] = [];
@@ -3724,7 +3703,7 @@ export class ChicoryTypeChecker {
               ctx
           );
       }
-  }
+    }
 
 
     if (ctx instanceof parser.ParenFunctionExpressionContext && ctx.parameterList()) {
@@ -3732,10 +3711,10 @@ export class ChicoryTypeChecker {
             const paramName = paramNode.getText();
             const paramType = (expectedParamTypesFromContext && expectedParamTypesFromContext[index])
                 ? expectedParamTypesFromContext[index]
-                : this.newTypeVar(paramName === "_" ? `T_ignored_${index}` : `T_param_${paramName}`);
+                : this.newTypeVar(paramName === "_" ? `t_ignored_${index}` : `t_param_${paramName}`);
 
             if (paramName !== "_") {
-                this.environment.declare(paramName, paramType, ctx, (str) => this.reportError(str, ctx));
+                this.environment.declare(paramName, paramType, ctx, (str) => this.reportError(str, ctx), []);
             } else {
                 // For '_', we still need to track its type for the function signature,
                 // but we don't declare it in the environment.
@@ -3750,17 +3729,17 @@ export class ChicoryTypeChecker {
         const paramName = paramNode.getText();
         const paramType = (expectedParamTypesFromContext && expectedParamTypesFromContext[0])
             ? expectedParamTypesFromContext[0]
-            : this.newTypeVar(paramName === "_" ? `T_ignored_0` : `T_param_${paramName}`);
+            : this.newTypeVar(paramName === "_" ? `t_ignored_0` : `t_param_${paramName}`);
 
         if (paramName !== "_") {
-            this.environment.declare(paramName, paramType, ctx, (str) => this.reportError(str, ctx));
+            this.environment.declare(paramName, paramType, ctx, (str) => this.reportError(str, ctx), []);
         } else {
             // For '_', add a hint to show its inferred type.
             this.hints.push({ context: ctx, type: paramType.toString() });
         }
         actualParamTypes.push(paramType);
     } else if (ctx instanceof parser.ParenFunctionExpressionWildcardContext || ctx instanceof parser.ParenlessFunctionExpressionWildcardContext) {
-        const paramType = this.newTypeVar(`T_ignored_0`);
+        const paramType = this.newTypeVar(`t_ignored_0`);
         this.hints.push({ context: ctx, type: paramType.toString() });
         actualParamTypes.push(paramType);
     } 
@@ -3790,13 +3769,12 @@ export class ChicoryTypeChecker {
         }
     }
 
-    this.environment = this.environment.popScope()!;
-    this.currentSubstitution = outerSubstitution;
-
-    // Apply the (outer) currentSubstitution to the types determined (params might be from context, return type is inferred then potentially unified)
+    // Apply the function's LOCAL substitution to finalize its signature
     const finalParamTypes = actualParamTypes.map(type => this.applySubstitution(type, this.currentSubstitution, new Set()));
     const finalReturnType = this.applySubstitution(inferredBodyReturnType, this.currentSubstitution, new Set());
-    
+
+    this.environment = this.environment.popScope()!;
+
     const resultFuncType = new FunctionType(finalParamTypes, finalReturnType);
     console.log(`[visitFuncExpr] Resulting function type: ${resultFuncType.toString()}`);
     return resultFuncType;
@@ -3816,7 +3794,7 @@ export class ChicoryTypeChecker {
     );
     console.log(
       `  currentSubstitution (before call):`,
-      new Map(this.currentSubstitution)
+      JSON.stringify(new Map(this.currentSubstitution)).slice(0,80)
     );
 
     // Apply *outer* substitutions to the function type *before* doing anything else.
@@ -3854,13 +3832,13 @@ export class ChicoryTypeChecker {
     console.log(`  > Visiting arguments...`);
     const argumentTypes = ctx.expr()
          ? ctx.expr().map((expr, i) => {
-             console.log(`    > Visiting arg ${i + 1}: ${expr.getText()}`);
+          console.log(`    > Visiting arg ${i + 1}: ${expr.getText()}`);
              // Get the expected type for this specific argument from the function's signature
              const expectedArgType = funcType.paramTypes.length > i ? funcType.paramTypes[i] : undefined;
              if (expectedArgType) {
-               console.log(`    > Expected type for arg ${i + 1}: ${expectedArgType.toString()}`);
+              console.log(`    > Expected type for arg ${i + 1}: ${expectedArgType.toString().slice(0, 80)}`);
              } else {
-               console.log(`    > No specific expected type for arg ${i + 1} (or arity mismatch).`);
+              console.log(`    > No specific expected type for arg ${i + 1} (or arity mismatch).`);
              }
              const argType = this.visitExpr(expr, expectedArgType); // Pass down the expected type
              console.log(`    > Arg ${i + 1} type (raw, after visitExpr): ${argType.toString()}`);
@@ -3869,9 +3847,9 @@ export class ChicoryTypeChecker {
          : [];
     console.log(`  > Finished visiting arguments.`);
     console.log(
-      `  currentSubstitution (after visiting args):`,
-      new Map(this.currentSubstitution)
-    );
+        `  currentSubstitution (after visiting args):`,
+        JSON.stringify(new Map(this.currentSubstitution)).slice(0,80)
+      );
 
     // Apply current substitutions to argument types as well, as visitExpr might have updated them.
     // Pass empty visited set
@@ -3887,15 +3865,6 @@ export class ChicoryTypeChecker {
       return substArgType;
     });
 
-    // Create a FRESH substitution map specific to *this function call*.
-    // This map will capture how type variables *within* the function signature
-    // are unified with the provided arguments.
-    const callSubstitution: SubstitutionMap = new Map();
-    console.log(
-      `  > Initializing callSubstitution (empty):`,
-      new Map(callSubstitution)
-    );
-
     // Check arity (number of arguments)
     if (substitutedArgumentTypes.length !== funcType.paramTypes.length) {
       const errorMsg = `Expected ${funcType.paramTypes.length} arguments, but got ${substitutedArgumentTypes.length}`;
@@ -3908,7 +3877,8 @@ export class ChicoryTypeChecker {
       return UnknownType;
     }
 
-    // Unify arguments with parameters using the call-specific substitution map (`callSubstitution`).
+    // Unify arguments with parameters using the main substitution map.
+    // This will propagate constraints from the call site to the rest of the checker.
     console.log(`  > Unifying arguments with parameters...`);
     let unificationOk = true;
     for (let i = 0; i < substitutedArgumentTypes.length; i++) {
@@ -3920,11 +3890,11 @@ export class ChicoryTypeChecker {
         } ('${argType}')`
       );
       // Unify the function's parameter type with the (substituted) argument type.
-      // The substitution map `callSubstitution` is updated by `unify`.
+      // The main substitution map `this.currentSubstitution` is updated by `unify`.
       const result = this.unify(
         paramType, // Parameter type from the (potentially substituted) function signature
         argType, // Argument type resolved in the current context
-        callSubstitution // Update this map with bindings for type vars in funcType.paramTypes
+        this.currentSubstitution // <<< Use the main substitution map
       );
       if (result instanceof Error) {
         unificationOk = false;
@@ -3938,15 +3908,15 @@ export class ChicoryTypeChecker {
           errorMsg,
           ctx.expr(i)! // Report error on the specific argument
         );
-        console.log(
-          `    > callSubstitution (after arg ${i + 1}):`,
-          new Map(callSubstitution)
-        );
-        // Store the unified type for the argument expression itself.
-        // This ensures hints and the compiler see the type expected by the function param.
-        this.setExpressionType(ctx.expr(i)!, result);
-        // Add the hint for the argument expression *after* successful unification.
-        this.hints.push({ context: ctx.expr(i)!, type: result.toString() });
+        // On error, we don't know the type.
+        this.setExpressionType(ctx.expr(i)!, UnknownType);
+        this.hints.push({ context: ctx.expr(i)!, type: UnknownType.toString() });
+      } else {
+        // On success, the argument's type is now constrained.
+        // Apply substitutions to get its most up-to-date form and store it.
+        const finalArgType = this.applySubstitution(result, this.currentSubstitution, new Set());
+        this.setExpressionType(ctx.expr(i)!, finalArgType);
+        this.hints.push({ context: ctx.expr(i)!, type: finalArgType.toString() });
       }
     }
 
@@ -3961,23 +3931,19 @@ export class ChicoryTypeChecker {
 
     console.log(`  > Argument unification successful.`);
     
-    // Calculate the final return type by applying the call-specific substitution (`callSubstitution`)
+    // Calculate the final return type by applying the main substitution map
     // to the function's declared return type.
     console.log(
-      `  > Calculating final return type from '${funcType.returnType.toString()}' using callSubstitution.`
+      `  > Calculating final return type from '${funcType.returnType.toString()}' using main substitution.`
     );
     let finalReturnType = this.applySubstitution(
       funcType.returnType,
-      callSubstitution,
+      this.currentSubstitution, // <<< Use the main substitution map
       new Set() // Pass empty visited set for final application
     );
     console.log(
       `  > Final return type (calculated via applySubstitution): ${finalReturnType.toString()}`
     );
-    // The applySubstitution call above should handle resolving the return type correctly,
-    // including substituting type variables bound by the call arguments into the
-    // function's return type (which might be an AdtType or GenericType).
-    // The complex "Special Handling" block below is removed as it was likely redundant and incorrect.
 
     // Store and add hint for the final, calculated return type
     console.log(
@@ -3989,7 +3955,7 @@ export class ChicoryTypeChecker {
     console.log(
       `[visitCallExpr] EXIT: Returning final type: ${finalReturnType.toString()}`
     );
-    return finalReturnType; // Keep existing return
+    return finalReturnType;
   }
 
   // --- BEGIN REFACTORED visitMatchExpr ---
@@ -4579,7 +4545,8 @@ export class ChicoryTypeChecker {
           .IDENTIFIER()[1]
           .getText();
         this.environment.declare(paramName, UnknownType, ctx, (str) =>
-          this.reportError(str, ctx)
+          this.reportError(str, ctx),
+          []
         );
         this.hints.push({ context: ctx, type: UnknownType.toString() });
       }
@@ -4706,7 +4673,8 @@ export class ChicoryTypeChecker {
         ctx,
         (
           str // Use finalParamType
-        ) => this.reportError(str, ctx)
+        ) => this.reportError(str, ctx),
+        []
       );
       this.hints.push({ context: ctx, type: finalParamType.toString() });
 
@@ -4939,7 +4907,7 @@ export class ChicoryTypeChecker {
         // Bind the variable in the current scope with the matched type
         this.environment.declare(idName, matchedType, ctx, (str) => {
           this.reportError(str, ctx);
-        });
+        }, []);
         this.hints.push({ context: ctx, type: matchedType.toString() });
       }
     } else if (
