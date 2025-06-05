@@ -288,7 +288,6 @@ export class ChicoryParserVisitor {
   // Add expectedType parameter
   visitExpr(ctx: parser.ExprContext, expectedType?: ChicoryType): string { // Added expectedType
     // Get the type of the primary expression from the map
-    console.log(ctx.getText())
     const primaryExprCtx = ctx.primaryExpr();
     // Pass expectedType down to primary expression visitor
     let currentJs = this.visitPrimaryExpr(primaryExprCtx, expectedType);
@@ -627,12 +626,21 @@ export class ChicoryParserVisitor {
   visitBlockExpr(ctx: parser.BlockExprContext, inject: string = ""): string {
     this.enterScope();
     this.indentLevel++;
-    const stmts = ctx.stmt().map((stmt) => this.visitStmt(stmt));
-    const finalExpr = this.visitExpr(ctx.expr());
+
+    const stmts = ctx.stmt()
+    
+    // If the final stmt is an expression, we need to "return" it
+    // Otherwise it is a UnitType block
+    const visitedStmts = stmts.at(-1)?.expr()
+      ? [
+        ...stmts.slice(0, -1).map((stmt) => this.visitStmt(stmt)),
+        `${this.indent()}return ${this.visitExpr(stmts.at(-1)!.expr()!)};` // Visit the last expression and return it
+      ]
+      : stmts.map((stmt) => this.visitStmt(stmt));
+
     const block = [
       ...(inject ? [this.indent() + inject] : []),
-      ...stmts,
-      `${this.indent()}return ${finalExpr};`,
+      ...visitedStmts,
     ];
     this.indentLevel--;
     this.exitScope();

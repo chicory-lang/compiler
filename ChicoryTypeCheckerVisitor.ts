@@ -3618,8 +3618,17 @@ export class ChicoryTypeChecker {
 
   visitBlockExpr(ctx: parser.BlockExprContext): ChicoryType {
     this.environment = this.environment.pushScope(); // Push a new scope
-    ctx.stmt().forEach((stmt) => this.visitStmt(stmt));
-    const blockType = this.visitExpr(ctx.expr());
+    const stmts = ctx.stmt()
+    stmts.forEach((stmt) => this.visitStmt(stmt));
+
+    let blockType: ChicoryType;
+    if (stmts.at(-1)?.expr()) { // Check if the final expression exists and is an expr
+      blockType = this.visitExpr(stmts.at(-1)?.expr()!);
+    } else {
+      // Block is empty or ends with one or more statements, but no final expression.
+      blockType = UnitType;
+    }
+
     this.environment = this.environment.popScope()!; // Pop the scope
     return blockType;
   }
