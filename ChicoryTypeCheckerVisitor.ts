@@ -2012,6 +2012,15 @@ export class ChicoryTypeChecker {
 
     this.environment = this.environment.popScope();
     
+    // Propagate discovered type variables back to the outer map
+    if (outerTypeVarsInSig) {
+      typeVarsInSig.forEach((typeVar, name) => {
+        if (!outerTypeVarsInSig.has(name)) {
+          outerTypeVarsInSig.set(name, typeVar);
+        }
+      });
+    }
+    
     return new FunctionType(paramTypes, returnType);
   }
 
