@@ -1006,9 +1006,6 @@ export class ChicoryTypeChecker {
 
     // Add case for GenericType
     if (type instanceof GenericType) {
-      if (type.name === typeVar.name) {
-        return true;
-      }
       return type.typeArguments.some((t) => this.occursIn(typeVar, t));
     }
 
@@ -1206,7 +1203,6 @@ export class ChicoryTypeChecker {
       (c) => c.adtName === "Option" || c.adtName === "Result"
     ); // Keep built-ins
     this.currentSubstitution = new Map();
-    this.nextTypeVarId = 0;
     this.expressionTypes.clear();
     this.exportedBindings = new Map();
 
@@ -4124,7 +4120,14 @@ export class ChicoryTypeChecker {
       this.currentSubstitution,
       new Set()
     );
-    this.checkExhaustiveness(coverage, finalRefinedMatchedType, ctx);
+    
+    // Re-initialize coverage with the final refined type to handle cases where
+    // the matched type started as a TypeVariable and got unified to an ADT type
+    // during pattern matching. Only update the coverage TYPE, keep the existing
+    // pattern tracking data.
+    const finalCoverage = this.initializeCoverageWithExisting(finalRefinedMatchedType, coverage, ctx);
+    
+    this.checkExhaustiveness(finalCoverage, finalRefinedMatchedType, ctx);
 
     // --- Determine Final Type ---
     let finalArmType = firstArmType ?? UnknownType; // Use firstArmType if valid, else Unknown
@@ -4520,6 +4523,61 @@ export class ChicoryTypeChecker {
     } else {
       console.log(`[checkExhaustiveness] Match is exhaustive.`);
     }
+  }
+
+  // Helper method to re-initialize coverage with final refined type while preserving pattern data
+  private initializeCoverageWithExisting(
+    matchedType: ChicoryType,
+    existingCoverage: MatchCoverage,
+    ctx: parser.MatchExprContext
+  ): MatchCoverage {
+    // Get the new coverage type classification based on the final refined type
+    const newCoverage = this.initializeCoverage(matchedType, ctx);
+    
+    // If the new coverage is ADT type but the old wasn't, we need to update
+    if (newCoverage.type === "adt" && existingCoverage.type !== "adt") {
+      console.log(`[initializeCoverageWithExisting] Updating coverage from '${existingCoverage.type}' to 'adt' for refined type: ${matchedType.toString()}`);
+      
+      // Transfer the pattern tracking data to the new ADT coverage
+      newCoverage.processedPatterns = existingCoverage.processedPatterns;
+      
+      // Analyze the processed patterns to determine ADT coverage
+      if (existingCoverage.processedPatterns) {
+        for (const patternStr of existingCoverage.processedPatterns) {
+          // Check if this pattern corresponds to an ADT variant
+          if (patternStr === "None") {
+            // Bare ADT pattern - remove from remaining variants
+            newCoverage.remainingVariants?.delete("None");
+          } else if (patternStr.startsWith("Some(")) {
+            // ADT with parameter pattern - remove from remaining variants
+            newCoverage.remainingVariants?.delete("Some");
+          }
+          // Add other pattern types as needed
+        }
+      }
+      
+      // If a wildcard/param was seen in the old coverage, mark as such
+      if (existingCoverage.wildcardOrParamSeen) {
+        newCoverage.remainingVariants?.clear();
+        newCoverage.wildcardOrParamSeen = true;
+      }
+      
+      // Update wildcardOrParamSeen if all variants are now covered
+      if (newCoverage.remainingVariants?.size === 0) {
+        newCoverage.wildcardOrParamSeen = true;
+      }
+      
+      console.log(`[initializeCoverageWithExisting] Updated ADT coverage:`, {
+        adtName: newCoverage.adtName,
+        remainingVariants: Array.from(newCoverage.remainingVariants || []),
+        wildcardOrParamSeen: newCoverage.wildcardOrParamSeen
+      });
+      
+      return newCoverage;
+    }
+    
+    // Otherwise, return the existing coverage unchanged
+    return existingCoverage;
   }
 
   // --- END NEW HELPER METHODS ---
