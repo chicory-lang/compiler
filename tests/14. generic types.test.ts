@@ -47,3 +47,37 @@ type UseState<T> = (T) => State<T>
     const result = compile(code);
     expect(result.errors).toHaveLength(0);
 });
+
+test("Should allow instantiating generics in multiple ways", () => {
+  const chicoryCode = `
+   bind {
+       useState as (T) => [T, (T) => void]
+   } from "react"
+
+   const [str, setStr] = useState("")
+   const newStr = str + "a"
+   const [num, setNum] = useState(1)
+   const newNum = num + 1
+    `;
+  // Expecting errors initially as JSX type checking isn't fully implemented
+  const { code, errors, hints } = compile(chicoryCode);
+
+  expect(errors.length).toBe(0)
+});
+
+test("Should allow instantiate generics in multiple ways and error when misused", () => {
+  const chicoryCode = `
+   bind {
+       useState as (T) => [T, (T) => void]
+   } from "react"
+
+   const [str, setStr] = useState("")
+   const newStr = str + 1
+   const [num, setNum] = useState(1)
+   const newNum = num + "1"
+    `;
+  // Expecting errors initially as JSX type checking isn't fully implemented
+  const { code, errors, hints } = compile(chicoryCode);
+
+  expect(errors.length).toBeGreaterThan(0)
+});
